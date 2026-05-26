@@ -1,7 +1,10 @@
 const fs   = require('fs');
 const path = require('path');
 
-const CONFIG_PATH = path.join(__dirname, '..', 'data', 'yt-config.json');
+const dataDir2 = process.env.RAILWAY_VOLUME_MOUNT_PATH
+  ? require('path').join(process.env.RAILWAY_VOLUME_MOUNT_PATH, 'data')
+  : require('path').join(__dirname, '..', 'data');
+const CONFIG_PATH = require('path').join(dataDir2, 'yt-config.json');
 
 function loadConfig() {
   if (!fs.existsSync(CONFIG_PATH)) return { alert_users: [], alert_usernames: {} };

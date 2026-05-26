@@ -1,7 +1,10 @@
 const path = require('path');
 const fs   = require('fs');
 
-const dataDir = path.join(__dirname, '..', 'data');
+// Use Railway persistent volume if available, otherwise local data/
+const dataDir = process.env.RAILWAY_VOLUME_MOUNT_PATH
+  ? path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH, 'data')
+  : path.join(__dirname, '..', 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
 // ─── Month-aware DB paths ─────────────────────────────────────────────────────
