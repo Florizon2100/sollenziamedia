@@ -1,6 +1,6 @@
 const cron = require('node-cron');
 const { getAllChannelsDailyStatus } = require('./database');
-const { getAlertUsers } = require('./youtube');
+const { getAllowedChannels, getAlertUsers, getLogChannel, getAllGuildIds } = require('./server-config');
 const { EmbedBuilder } = require('discord.js');
 
 const REQUIRED = { tiktok: 2, instagram: 2, youtube: 2 };
@@ -34,60 +34,63 @@ function scheduleDailyPlatformCheck(client) {
 }
 
 async function runPlatformCheck(client) {
-  const logChannelId = process.env.LOG_CHANNEL_ID;
-  const adminId      = process.env.ADMIN_USER_ID;
-  const allowedIds   = (process.env.ALLOWED_CHANNEL_IDS||'').split(',').map(s=>s.trim()).filter(Boolean);
-  const alertUsers   = getAlertUsers();
-  if (!logChannelId || !allowedIds.length) return;
-
   const today    = getTodayCET();
-  const statuses = getAllChannelsDailyStatus(allowedIds, today);
+  const guildIds = new Set(getAllGuildIds());
+  if (process.env.GUILD_ID) guildIds.add(process.env.GUILD_ID);
 
-  let logChannel;
-  try { logChannel = await client.channels.fetch(logChannelId); if (!logChannel?.isTextBased()) return; }
-  catch { return; }
+  for (const guildId of guildIds) {
+    const logChannelId = getLogChannel(guildId);
+    const allowedIds   = getAllowedChannels(guildId);
+    const alertUsers   = getAlertUsers(guildId);
+    if (!logChannelId || !allowedIds.length) continue;
 
-  // Fetch all channel names in parallel
-  await Promise.all(statuses.map(async (s) => {
+    const statuses = getAllChannelsDailyStatus(guildId, allowedIds, today);
+    let logChannel;
     try {
-      const dc = client.channels.cache.get(s.channelId) || await client.channels.fetch(s.channelId).catch(()=>null);
-      if (dc) s.channelName = dc.name;
-    } catch {}
-  }));
+      logChannel = await client.channels.fetch(logChannelId);
+      if (!logChannel?.isTextBased()) continue;
+    } catch { continue; }
 
-  const failingChannels = statuses.filter(status => {
-    const missing = Object.entries(REQUIRED).filter(([p,req]) => (status.counts[p]||0) < req);
-    if (missing.length) { status.missing = missing; return true; }
-    return false;
-  });
+    await Promise.all(statuses.map(async s => {
+      try {
+        const dc = client.channels.cache.get(s.channelId) || await client.channels.fetch(s.channelId).catch(()=>null);
+        if (dc) s.channelName = dc.name;
+      } catch {}
+    }));
 
-  if (!failingChannels.length) { console.log('[DAILY-CHECK] All channels met quota 🎉'); return; }
-
-  const allTagIds = [...new Set([adminId, ...alertUsers].filter(Boolean))];
-  const tags      = allTagIds.map(id => `<@${id}>`).join(' ');
-  const embed     = new EmbedBuilder()
-    .setColor(0xED4245)
-    .setTitle('⚠️ Daily Posting Quota Not Met!')
-    .setDescription(`${tags} — Channels missing **2 videos/platform** by 11 PM CET:`)
-    .setTimestamp();
-
-  for (const ch of failingChannels) {
-    const lines = Object.entries(PLATFORM_META).map(([platform, meta]) => {
-      const actual = ch.counts[platform]||0, req = REQUIRED[platform];
-      if (platform === 'facebook') return `${meta.emoji} ${meta.label}: ${actual} *(no quota)*`;
-      return `${meta.emoji} ${meta.label}: ${actual>=req?'✅':`❌ (${actual}/${req})`}`;
+    const failingChannels = statuses.filter(status => {
+      const missing = Object.entries(REQUIRED).filter(([p,req]) => (status.counts[p]||0) < req);
+      if (missing.length) { status.missing = missing; return true; }
+      return false;
     });
-    embed.addFields({ name: `📌 #${ch.channelName}`, value: lines.join('\n'), inline: true });
+
+    if (!failingChannels.length) continue;
+
+    const allTagIds = [...new Set([process.env.ADMIN_USER_ID, ...alertUsers].filter(Boolean))];
+    const tags      = allTagIds.map(id => `<@${id}>`).join(' ');
+    const embed     = new EmbedBuilder()
+      .setColor(0xED4245)
+      .setTitle('⚠️ Daily Posting Quota Not Met!')
+      .setDescription(`${tags} — Channels missing **2 videos/platform** by 11 PM CET:`)
+      .setTimestamp();
+
+    for (const ch of failingChannels) {
+      const lines = Object.entries(PLATFORM_META).map(([platform, meta]) => {
+        const actual = ch.counts[platform]||0, req = REQUIRED[platform];
+        if (platform === 'facebook') return `${meta.emoji} ${meta.label}: ${actual} *(no quota)*`;
+        return `${meta.emoji} ${meta.label}: ${actual>=req?'✅':`❌ (${actual}/${req})`}`;
+      });
+      embed.addFields({ name: `📌 #${ch.channelName}`, value: lines.join('\n'), inline: true });
+    }
+    await logChannel.send({ embeds: [embed] });
   }
-  await logChannel.send({ embeds: [embed] });
 }
 
-async function getChannelStatusEmbed(allowedIds, client, dateOverride = null) {
+async function getChannelStatusEmbed(guildId, allowedIds, client, dateOverride = null) {
   const today    = dateOverride || getTodayCET();
-  const statuses = getAllChannelsDailyStatus(allowedIds, today);
+  const statuses = getAllChannelsDailyStatus(guildId, allowedIds, today);
 
-  // Fetch all channel names in parallel
-  await Promise.all(statuses.map(async (s) => {
+  await Promise.all(statuses.map(async s => {
     try {
       const dc = client.channels.cache.get(s.channelId) || await client.channels.fetch(s.channelId).catch(()=>null);
       if (dc) s.channelName = dc.name;
@@ -96,8 +99,7 @@ async function getChannelStatusEmbed(allowedIds, client, dateOverride = null) {
 
   const isToday   = today === getTodayCET();
   const dateLabel = isToday ? `Today — ${today}` : today;
-
-  const lines = statuses.map(s => {
+  const lines     = statuses.map(s => {
     const tk=s.counts.tiktok||0, ig=s.counts.instagram||0, yt=s.counts.youtube||0, fb=s.counts.facebook||0;
     const fmt = (v,r) => v>=r?`${v}/${r} ✅`:v>0?`${v}/${r} ⏳`:`${v}/${r} ❌`;
     return `${tk>=2&&ig>=2&&yt>=2?'🟢':'🔴'} **#${s.channelName}**\n\`TK\` ${fmt(tk,2)}  \`IG\` ${fmt(ig,2)}  \`YT\` ${fmt(yt,2)}  \`FB\` ${fb}`;

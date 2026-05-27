@@ -75,6 +75,16 @@ const commands = [
     .addChannelOption(opt => opt.setName('channel').setDescription('The channel to send post logs into').setRequired(true)),
 
   new SlashCommandBuilder()
+    .setName('addchannel')
+    .setDescription('[Admin] Add an allowed posting channel')
+    .addChannelOption(opt => opt.setName('channel').setDescription('Channel to allow /posted in').setRequired(true)),
+
+  new SlashCommandBuilder()
+    .setName('removechannel')
+    .setDescription('[Admin] Remove an allowed posting channel')
+    .addChannelOption(opt => opt.setName('channel').setDescription('Channel to remove').setRequired(true)),
+
+  new SlashCommandBuilder()
     .setName('addadmin')
     .setDescription('[Admin] Grant bot-admin access to a user')
     .addUserOption(opt => opt.setName('user').setDescription('User to make bot admin').setRequired(true)),
