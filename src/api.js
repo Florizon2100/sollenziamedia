@@ -4,12 +4,12 @@ const fs      = require('fs');
 const path    = require('path');
 
 const dataDir = process.env.RAILWAY_VOLUME_MOUNT_PATH
-  ? path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH, 'data')
+  ? process.env.RAILWAY_VOLUME_MOUNT_PATH
   : path.join(__dirname, '..', 'data');
 
 function startAPI() {
   const app    = express();
-  const PORT   = process.env.API_PORT || 3000;
+  const PORT   = process.env.PORT || process.env.API_PORT || 3000;
   const SECRET = process.env.API_SECRET || 'changeme';
 
   // Allow requests from your OVH website

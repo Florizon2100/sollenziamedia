@@ -2,7 +2,7 @@ const fs   = require('fs');
 const path = require('path');
 
 const dataDir2 = process.env.RAILWAY_VOLUME_MOUNT_PATH
-  ? require('path').join(process.env.RAILWAY_VOLUME_MOUNT_PATH, 'data')
+  ? process.env.RAILWAY_VOLUME_MOUNT_PATH
   : require('path').join(__dirname, '..', 'data');
 const CONFIG_PATH = require('path').join(dataDir2, 'yt-config.json');
 

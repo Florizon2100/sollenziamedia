@@ -2,8 +2,9 @@ const path = require('path');
 const fs   = require('fs');
 
 // Use Railway persistent volume if available, otherwise local data/
+// If volume is mounted, use it directly (no subdirectory)
 const dataDir = process.env.RAILWAY_VOLUME_MOUNT_PATH
-  ? path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH, 'data')
+  ? process.env.RAILWAY_VOLUME_MOUNT_PATH
   : path.join(__dirname, '..', 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
