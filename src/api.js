@@ -12,7 +12,8 @@ function startAPI() {
   const PORT   = process.env.PORT || process.env.API_PORT || 3000;
   const SECRET = process.env.API_SECRET || 'changeme';
 
-  app.use(cors({ origin: '*', methods: ['GET','POST'] }));
+  app.use(cors({ origin: '*', methods: ['GET','POST','OPTIONS'], allowedHeaders: ['x-api-key','Content-Type'] }));
+  app.options('*', cors());
   app.use(express.json({ limit: '2mb' }));
 
   function auth(req, res, next) {
