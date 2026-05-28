@@ -1,0 +1,17 @@
+{
+  "name": "video-tracker-bot",
+  "version": "1.0.0",
+  "description": "Discord bot to track video posts across platforms",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "deploy": "node src/deploy-commands.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.26.4",
+    "dotenv": "^16.6.1",
+    "node-cron": "^3.0.3",
+    "express": "^4.18.2",
+    "cors": "^2.8.5"
+  }
+}
