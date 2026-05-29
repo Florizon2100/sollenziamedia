@@ -132,6 +132,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (commandName === 'adminlist')     return await handleAdminList(interaction);
     if (commandName === 'alertadd')      return await handleAlertAdd(interaction);
     if (commandName === 'alertremove')   return await handleAlertRemove(interaction);
+    if (commandName === 'announcement') return await handleAnnouncement(interaction);
     if (commandName === 'alertlist')     return await handleAlertList(interaction);
   } catch (err) {
     console.error(`[ERROR] /${commandName}:`, err?.message || err);
@@ -458,6 +459,41 @@ async function handleSelectMenu(interaction) {
       components: [],
     });
   }
+}
+
+// ─── /announcement ───────────────────────────────────────────────────────────
+
+async function handleAnnouncement(interaction) {
+  if (!requireAdmin(interaction)) return;
+
+  const guildId    = interaction.guildId;
+  const message    = interaction.options.getString('message');
+  const allowedIds = getAllowedChannels(guildId);
+
+  if (!allowedIds.length) {
+    return interaction.reply({ content: '❌ No allowed channels configured. Use `/addchannel` first.', ephemeral: true });
+  }
+
+  await interaction.reply({ content: `⏳ Sending to ${allowedIds.length} channel(s)...`, ephemeral: true });
+
+  let sent = 0, failed = 0;
+
+  for (const channelId of allowedIds) {
+    try {
+      const ch = await client.channels.fetch(channelId);
+      if (ch?.isTextBased()) {
+        await ch.send(`@everyone ${message}`);
+        sent++;
+      }
+    } catch (err) {
+      console.error(`[announcement] Failed to send to ${channelId}:`, err.message);
+      failed++;
+    }
+  }
+
+  await interaction.editReply({
+    content: `✅ Announcement sent to **${sent}** channel(s)${failed ? ` (${failed} failed)` : ''}.`
+  });
 }
 
 // ─── Log helper ───────────────────────────────────────────────────────────────
