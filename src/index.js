@@ -492,7 +492,7 @@ async function handleAnnouncement(interaction) {
         continue;
       }
 
-      await ch.send({ content: `@everyone ${message}`, allowedMentions: { parse: ['everyone'] } });
+      await ch.send({ content: `<@&1509909999743275008> ${message}`, allowedMentions: { roles: ['1509909999743275008'] } });
       sent++;
     } catch (err) {
       console.error(`[announcement] Failed to send to ${channelId}:`, err.message);
