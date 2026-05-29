@@ -119,6 +119,11 @@ const commands = [
     .setName('alertlist')
     .setDescription('[Admin] Show users who get tagged for missed posts'),
 
+  new SlashCommandBuilder()
+  .setName('announcement')
+  .setDescription('[Admin] Send a @everyone announcement to all allowed channels')
+  .addStringOption(opt => opt.setName('message').setDescription('The message to send').setRequired(true)),
+  
 ].map(cmd => cmd.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
