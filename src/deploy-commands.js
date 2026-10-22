@@ -155,24 +155,55 @@ const commands = [
 
 ].map(cmd => cmd.toJSON()).concat(require('./clipper-commands').getClipperCommands());
 
-const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+const fs     = require('fs');
+const path   = require('path');
+const crypto = require('crypto');
 
-(async () => {
-  try {
+const dataDir = process.env.RAILWAY_VOLUME_MOUNT_PATH
+  ? process.env.RAILWAY_VOLUME_MOUNT_PATH
+  : path.join(__dirname, '..', 'data');
+
+// Enregistre les commandes auprès de Discord.
+// onlyIfChanged : ne fait rien si la liste est identique à la dernière fois (utilisé au démarrage du bot).
+async function registerCommands({ token, clientId, guildId, onlyIfChanged = false } = {}) {
+  token    = token    || process.env.DISCORD_TOKEN;
+  clientId = clientId || process.env.CLIENT_ID;
+  guildId  = guildId === undefined ? process.env.GUILD_ID : guildId;
+  if (!token || !clientId) throw new Error('DISCORD_TOKEN ou CLIENT_ID manquant');
+
+  const hash = crypto.createHash('sha256').update(JSON.stringify({ clientId, commands })).digest('hex');
+  const hashFile = path.join(dataDir, 'commands-hash.json');
+  if (onlyIfChanged) {
+    try {
+      if (JSON.parse(fs.readFileSync(hashFile, 'utf8')).hash === hash) return { skipped: true, names: commands.map(c => c.name) };
+    } catch { /* pas encore de hash : on enregistre */ }
+  }
+
+  const rest = new REST({ version: '10' }).setToken(token);
+
+  if (guildId) {
     console.log('🔄 Clearing guild-specific commands (removes duplicates)...');
-    await rest.put(
-      Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
-      { body: [] }
-    );
+    await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: [] });
     console.log('✅ Guild commands cleared.');
+  }
 
-    console.log('🔄 Registering slash commands globally (all servers)...');
-    await rest.put(
-      Routes.applicationCommands(process.env.CLIENT_ID),
-      { body: commands }
-    );
-    console.log('✅ Slash commands registered globally!');
-    console.log('Commands:', commands.map(c => c.name).join(', '));
-    process.exit(0);
-  } catch (err) { console.error('❌ Failed:', err); process.exit(1); }
-})();
+  console.log('🔄 Registering slash commands globally (all servers)...');
+  await rest.put(Routes.applicationCommands(clientId), { body: commands });
+  console.log('✅ Slash commands registered globally!');
+
+  try {
+    if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(hashFile, JSON.stringify({ hash, at: new Date().toISOString() }), 'utf8');
+  } catch (e) { console.error('[COMMANDS] hash non sauvegardé:', e.message); }
+
+  return { skipped: false, names: commands.map(c => c.name) };
+}
+
+module.exports = { registerCommands, commands };
+
+// Lancé à la main : npm run deploy
+if (require.main === module) {
+  registerCommands()
+    .then(r => { console.log('Commands:', r.names.join(', ')); process.exit(0); })
+    .catch(err => { console.error('❌ Failed:', err); process.exit(1); });
+}

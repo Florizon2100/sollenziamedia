@@ -91,6 +91,12 @@ client.on('error', err => console.error('[CLIENT ERROR]', err?.message || err));
 
 client.once(Events.ClientReady, async (c) => {
   console.log(`✅ Logged in as ${c.user.tag}`);
+  // Enregistre les slash commands auprès de Discord (seulement si la liste a changé depuis le dernier démarrage).
+  try {
+    const { registerCommands } = require('./deploy-commands');
+    const r = await registerCommands({ token: process.env.DISCORD_TOKEN, clientId: process.env.CLIENT_ID || c.user.id, onlyIfChanged: true });
+    console.log(r.skipped ? `[COMMANDS] Already up to date (${r.names.length} commands)` : `[COMMANDS] Registered ${r.names.length} commands: ${r.names.join(', ')}`);
+  } catch (e) { console.error('[COMMANDS] Failed to register:', e.message); }
   try { scheduleDailyCheck(client); } catch(e) { console.error('[CRON ERROR]', e.message); }
   console.log('[BOT] Fully initialized and running');
 });
