@@ -153,7 +153,7 @@ const commands = [
     .setName('pauselist')
     .setDescription('[Admin] List all paused channels'),
 
-].map(cmd => cmd.toJSON());
+].map(cmd => cmd.toJSON()).concat(require('./clipper-commands').getClipperCommands());
 
 const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
 

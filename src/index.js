@@ -27,6 +27,7 @@ const {
 } = require('./server-config');
 
 const { scheduleDailyCheck } = require('./cron');
+const { isClipperCommand, handleClipperCommand, handleClipperAutocomplete } = require('./clipper-commands');
 const { getChannelStatusEmbed } = require('./daily-check');
 
 let startAPI = null;
@@ -111,6 +112,7 @@ client.on(Events.GuildCreate, async (guild) => {
 // ─── Router ───────────────────────────────────────────────────────────────────
 
 client.on(Events.InteractionCreate, async (interaction) => {
+  if (interaction.isAutocomplete()) { if (isClipperCommand(interaction.commandName)) return await handleClipperAutocomplete(interaction); return; }
   if (interaction.isStringSelectMenu()) return await handleSelectMenu(interaction);
   if (!interaction.isChatInputCommand()) return;
   const { commandName } = interaction;
@@ -140,6 +142,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (commandName === 'analytics')       return await handleAnalytics(interaction);
     if (commandName === 'leaderboard-week') return await handleWeeklyLeaderboard(interaction);
     if (commandName === 'announcement')    return await handleAnnouncement(interaction);
+    if (isClipperCommand(commandName))     return await handleClipperCommand(interaction);
   } catch (err) {
     console.error(`[ERROR] /${commandName}:`, err?.message || err);
     try {

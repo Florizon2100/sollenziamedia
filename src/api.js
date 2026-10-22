@@ -2,6 +2,7 @@ const express = require('express');
 const cors    = require('cors');
 const fs      = require('fs');
 const path    = require('path');
+const { getAllClippers } = require('./clippers');
 
 const dataDir = process.env.RAILWAY_VOLUME_MOUNT_PATH
   ? process.env.RAILWAY_VOLUME_MOUNT_PATH
@@ -93,6 +94,16 @@ function startAPI() {
       const merged = { ...existing, ...req.body };
       fs.writeFileSync(configPath, JSON.stringify(merged, null, 2), 'utf8');
       res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Liste des clippers (comptes + lien) pour le site. ?guildId= pour filtrer un serveur.
+  app.get('/api/clippers', auth, (req, res) => {
+    try {
+      const guildId = req.query.guildId ? String(req.query.guildId).replace(/[^0-9A-Za-z_-]/g, '') : null;
+      res.json({ clippers: getAllClippers(guildId) });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

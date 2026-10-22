@@ -230,6 +230,7 @@ function getUsersMissingOnDate(guildId, dateKey) {
 }
 
 module.exports = {
+  loadDB,
   getWeekKey, saveAnalytics, getAnalytics,
   insertPost, insertMultiplePosts, removePost, getPostsForDate,
   getAllKnownUsers, getAllChannelsDailyStatus,
