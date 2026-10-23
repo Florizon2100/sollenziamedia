@@ -2,7 +2,8 @@ const express = require('express');
 const cors    = require('cors');
 const fs      = require('fs');
 const path    = require('path');
-const { getAllClippers } = require('./clippers');
+const { getAllClippers, assignClient } = require('./clippers');
+const { clicksFor, hasKey: clicksEnabled } = require('./clickmagick');
 
 const dataDir = process.env.RAILWAY_VOLUME_MOUNT_PATH
   ? process.env.RAILWAY_VOLUME_MOUNT_PATH
@@ -103,7 +104,21 @@ function startAPI() {
   app.get('/api/clippers', auth, (req, res) => {
     try {
       const guildId = req.query.guildId ? String(req.query.guildId).replace(/[^0-9A-Za-z_-]/g, '') : null;
-      res.json({ clippers: getAllClippers(guildId) });
+      res.json({ clickTracking: clicksEnabled(), clippers: getAllClippers(guildId).map(c => ({ ...c, clicks: clicksFor(c) })) });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Assigner un clipper à un client depuis le site. body: { guildId, id, clientId|null }
+  app.post('/api/clippers/assign', auth, (req, res) => {
+    try {
+      const clean = v => String(v ?? '').replace(/[^0-9A-Za-z_\- .]/g, '');
+      const guildId = clean(req.body.guildId);
+      if (!guildId || !req.body.id) return res.status(400).json({ error: 'Missing guildId or id' });
+      const r = assignClient(guildId, String(req.body.id), req.body.clientId ? String(req.body.clientId) : null);
+      if (r.error) return res.status(404).json({ error: r.error });
+      res.json({ ok: true, clipper: r.clipper });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

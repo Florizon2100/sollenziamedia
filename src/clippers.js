@@ -8,6 +8,24 @@ const dataDir = process.env.RAILWAY_VOLUME_MOUNT_PATH
   : path.join(__dirname, '..', 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
+// Clients (créés dans l'admin du site, poussés vers le bot dans admin-config.json)
+function readAdminClients() {
+  try {
+    const p = path.join(dataDir, 'admin-config.json');
+    if (!fs.existsSync(p)) return [];
+    const cfg = JSON.parse(fs.readFileSync(p, 'utf8'));
+    return (Array.isArray(cfg.clients) ? cfg.clients : []).filter(c => c && c.name).map(c => ({ id: String(c.id ?? c.name), name: String(c.name) }));
+  } catch { return []; }
+}
+function resolveClient(input) {
+  const q = String(input).trim().toLowerCase();
+  return readAdminClients().find(c => c.id.toLowerCase() === q || c.name.toLowerCase() === q) || null;
+}
+function searchClients(query) {
+  const q = String(query || '').trim().toLowerCase();
+  return readAdminClients().filter(c => c.name.toLowerCase().includes(q)).map(c => c.name).slice(0, 25);
+}
+
 const ACCOUNT_FIELDS = ['youtube', 'tiktok', 'instagram'];
 
 const DOMAINS = {
@@ -140,19 +158,47 @@ function upsertClipper(guildId, name, fields, addedBy = null) {
     }
   }
 
+  if (fields.client !== undefined && fields.client !== null) {
+    if (isClear(fields.client)) { updates.clientId = null; updates.clientName = null; }
+    else {
+      const cl = resolveClient(fields.client);
+      if (!cl) {
+        const known = readAdminClients().map(c => c.name);
+        return { error: known.length ? `Client « ${String(fields.client).trim()} » introuvable. Clients connus : ${known.join(', ')}` : "Aucun client trouvé. Crée d'abord tes clients dans l'admin du site, puis clique « Push Local Data to Railway »." };
+      }
+      updates.clientId = cl.id; updates.clientName = cl.name;
+    }
+  }
+
   const db = readFile(filePath(guildId));
   const id = makeId(cleanName);
   const now = new Date().toISOString();
   let clipper = db.clippers.find(c => c.id === id);
   const created = !clipper;
   if (created) {
-    clipper = { id, name: cleanName, youtube: null, tiktok: null, instagram: null, link: null, createdAt: now, addedBy };
+    clipper = { id, name: cleanName, youtube: null, tiktok: null, instagram: null, link: null, clientId: null, clientName: null, createdAt: now, addedBy };
     db.clippers.push(clipper);
   }
   Object.assign(clipper, updates);
   clipper.updatedAt = now;
   writeFile(guildId, db);
   return { clipper, created, changed: Object.keys(updates).length };
+}
+
+// Assigne (ou retire, clientId = null) le client d'un clipper — utilisé par le site.
+function assignClient(guildId, clipperId, clientId) {
+  const db = readFile(filePath(guildId));
+  const c = db.clippers.find(x => x.id === String(clipperId));
+  if (!c) return { error: 'Clipper not found' };
+  if (!clientId) { c.clientId = null; c.clientName = null; }
+  else {
+    const cl = readAdminClients().find(x => x.id === String(clientId));
+    if (!cl) return { error: 'Client not found' };
+    c.clientId = cl.id; c.clientName = cl.name;
+  }
+  c.updatedAt = new Date().toISOString();
+  writeFile(guildId, db);
+  return { clipper: c };
 }
 
 function removeClipper(guildId, name) {
@@ -181,14 +227,19 @@ function getAllClippers(guildId = null) {
     ? [`clippers-${guildId}.json`]
     : fs.readdirSync(dataDir).filter(f => /^clippers-.+\.json$/.test(f));
   const out = [];
+  const clients = readAdminClients();
   for (const f of files) {
     const gid = f.replace(/^clippers-/, '').replace(/\.json$/, '');
-    for (const c of readFile(path.join(dataDir, f)).clippers) out.push({ ...c, guildId: gid });
+    for (const c of readFile(path.join(dataDir, f)).clippers) {
+      const live = c.clientId ? clients.find(x => x.id === c.clientId) : null;
+      out.push({ ...c, clientName: live ? live.name : (c.clientName || null), guildId: gid });
+    }
   }
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 module.exports = {
   ACCOUNT_FIELDS, parseAccount, parseLink,
-  upsertClipper, removeClipper, listClippers, searchNames, getAllClippers,
+  upsertClipper, assignClient, removeClipper, listClippers, searchNames, getAllClippers,
+  readAdminClients, resolveClient, searchClients,
 };

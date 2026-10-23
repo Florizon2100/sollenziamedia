@@ -97,6 +97,7 @@ client.once(Events.ClientReady, async (c) => {
     const r = await registerCommands({ token: process.env.DISCORD_TOKEN, clientId: process.env.CLIENT_ID || c.user.id, onlyIfChanged: true });
     console.log(r.skipped ? `[COMMANDS] Already up to date (${r.names.length} commands)` : `[COMMANDS] Registered ${r.names.length} commands: ${r.names.join(', ')}`);
   } catch (e) { console.error('[COMMANDS] Failed to register:', e.message); }
+  try { require('./clickmagick').startClickTracking(); } catch (e) { console.error('[CLICKMAGICK]', e.message); }
   try { scheduleDailyCheck(client); } catch(e) { console.error('[CRON ERROR]', e.message); }
   console.log('[BOT] Fully initialized and running');
 });

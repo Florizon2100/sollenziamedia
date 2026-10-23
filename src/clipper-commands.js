@@ -1,8 +1,9 @@
 const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const clippers = require('./clippers');
 const { isBotAdmin } = require('./server-config');
+const { clicksFor } = require('./clickmagick');
 
-const COMMAND_NAMES = new Set(['addclipper', 'removeclipper']);
+const COMMAND_NAMES = new Set(['addclipper', 'removeclipper', 'clipperstats']);
 
 function getClipperCommands() {
   return [
@@ -13,7 +14,14 @@ function getClipperCommands() {
       .addStringOption(o => o.setName('youtube').setDescription('YouTube @handle or channel link (- to clear)').setMaxLength(200))
       .addStringOption(o => o.setName('tiktok').setDescription('TikTok @handle or profile link (- to clear)').setMaxLength(200))
       .addStringOption(o => o.setName('instagram').setDescription('Instagram @handle or profile link (- to clear)').setMaxLength(200))
-      .addStringOption(o => o.setName('link').setDescription('Bio link, e.g. ClickMagick (- to clear)').setMaxLength(500)),
+      .addStringOption(o => o.setName('link').setDescription('Bio link, e.g. ClickMagick (- to clear)').setMaxLength(500))
+      .addStringOption(o => o.setName('client').setDescription('Client this clipper works for (- to clear)').setAutocomplete(true).setMaxLength(100)),
+
+    new SlashCommandBuilder()
+      .setName('clipperstats')
+      .setDescription('[Admin] Valid ClickMagick clicks per clipper (today / 7 days / 30 days)')
+      .addStringOption(o => o.setName('name').setDescription('One clipper (leave empty for all)').setAutocomplete(true).setMaxLength(50))
+      .addStringOption(o => o.setName('client').setDescription('Only the clippers of this client').setAutocomplete(true).setMaxLength(100)),
 
     new SlashCommandBuilder()
       .setName('removeclipper')
@@ -38,6 +46,7 @@ function clipperEmbed(c, color, title) {
       accountLine('🎵 TikTok', c.tiktok),
       accountLine('📸 Instagram', c.instagram),
       `🔗 Link: ${c.link ? c.link : '—'}`,
+      `🏢 Client: ${c.clientName || '—'}`,
     ].join('\n'))
     .setTimestamp();
 }
@@ -52,12 +61,15 @@ async function handleClipperCommand(interaction) {
   const g = interaction.guildId;
   const name = interaction.options.getString('name');
 
+  if (interaction.commandName === 'clipperstats') return handleStats(interaction, g, name);
+
   if (interaction.commandName === 'addclipper') {
     const fields = {
       youtube:   interaction.options.getString('youtube'),
       tiktok:    interaction.options.getString('tiktok'),
       instagram: interaction.options.getString('instagram'),
       link:      interaction.options.getString('link'),
+      client:    interaction.options.getString('client'),
     };
     const r = clippers.upsertClipper(g, name, fields, interaction.user.id);
     if (r.error) return interaction.reply({ content: `❌ ${r.error}`, ephemeral: true });
@@ -81,12 +93,34 @@ async function handleClipperCommand(interaction) {
   }
 }
 
+async function handleStats(interaction, g, name) {
+  const clientQ = interaction.options.getString('client');
+  let list = clippers.getAllClippers(g);
+  if (name)    list = list.filter(c => c.id === name.trim().toLowerCase());
+  if (clientQ) list = list.filter(c => (c.clientName || '').toLowerCase() === clientQ.trim().toLowerCase());
+  if (!list.length) return interaction.reply({ content: '❌ No clipper matches.', ephemeral: true });
+
+  const lines = list.slice(0, 25).map(c => {
+    const k = clicksFor(c);
+    const who = `**${c.name}**${c.clientName ? ` · ${c.clientName}` : ''}`;
+    if (k.status === 'disabled') return `${who} — click tracking not enabled (CLICKMAGICK_API_KEY missing)`;
+    if (k.status === 'nolink')   return `${who} — no link`;
+    if (k.status === 'unmatched') return `${who} — link \`${k.slug}\` not found in ClickMagick`;
+    if (k.status !== 'ok')       return `${who} — loading…`;
+    return `${who} — today **${k.today.valid}** · 7d **${k.d7.valid}** · 30d **${k.d30.valid}** valid clicks _(30d total ${k.d30.total}, flagged ${k.d30.flagged})_`;
+  });
+  return interaction.reply({
+    embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle('🖱️ Valid clicks per clipper').setDescription(lines.join('\n').slice(0, 4000)).setFooter({ text: 'Refreshed every 30 min · valid = unique, non-flagged clicks' }).setTimestamp()],
+    ephemeral: true,
+  });
+}
+
 // Suggestions de noms pendant la frappe (utile pour /removeclipper et pour modifier un clipper existant).
 async function handleClipperAutocomplete(interaction) {
   try {
     if (!interaction.guildId) return await interaction.respond([]);
-    const focused = interaction.options.getFocused();
-    const names = clippers.searchNames(interaction.guildId, focused);
+    const f = interaction.options.getFocused(true);
+    const names = f.name === 'client' ? clippers.searchClients(f.value) : clippers.searchNames(interaction.guildId, f.value);
     await interaction.respond(names.map(n => ({ name: n.slice(0, 100), value: n.slice(0, 100) })));
   } catch {
     try { await interaction.respond([]); } catch {}
