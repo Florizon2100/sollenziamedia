@@ -35,10 +35,13 @@ function saveCache() {
 // https://track.domaine.com/alice  ->  "alice"
 function slugOf(link) {
   try {
+    // chemin complet ("bryanrgt/abel"); on essaiera aussi le dernier segment ("abel") à la recherche
     const parts = new URL(link).pathname.split('/').filter(Boolean);
-    return parts.length ? parts[parts.length - 1].toLowerCase() : null;
+    return parts.length ? parts.join('/').toLowerCase() : null;
   } catch { return null; }
 }
+
+const pickId = (links, key) => links[key] ?? links[key.split('/').pop()] ?? null;
 
 // ─── Liste des liens (slug -> id) ────────────────────────────────────────────
 async function listAllLinks() {
@@ -110,15 +113,15 @@ async function refresh() {
       d30: new Date(end.getTime() - 30 * 86400000),
     };
     const byLink = {};
-    const found = slugs.filter(s => links[s]);
-    slugs.forEach(s => { byLink[s] = { linkId: links[s] || null }; });
+    const found = slugs.filter(s => pickId(links, s));
+    slugs.forEach(s => { byLink[s] = { linkId: pickId(links, s) }; });
 
     for (let i = 0; i < found.length; i += 20) {
       const batch = found.slice(i, i + 20);
-      const ids = batch.map(s => links[s]);
+      const ids = batch.map(s => pickId(links, s));
       for (const [key, start] of Object.entries(windows)) {
         const stats = await statsReport(ids, start, end);
-        for (const s of batch) byLink[s][key] = pack(stats.find(x => x.link_id === links[s]));
+        for (const s of batch) byLink[s][key] = pack(stats.find(x => x.link_id === pickId(links, s)));
         await sleep(500);
       }
     }
