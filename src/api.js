@@ -2,7 +2,7 @@ const express = require('express');
 const cors    = require('cors');
 const fs      = require('fs');
 const path    = require('path');
-const { getAllClippers, assignClient } = require('./clippers');
+const { getAllClippers, assignClient, upsertClipper, removeClipper } = require('./clippers');
 const { clicksFor, hasKey: clicksEnabled } = require('./clickmagick');
 
 const dataDir = process.env.RAILWAY_VOLUME_MOUNT_PATH
@@ -119,6 +119,36 @@ function startAPI() {
       const r = assignClient(guildId, String(req.body.id), req.body.clientId ? String(req.body.clientId) : null);
       if (r.error) return res.status(404).json({ error: r.error });
       res.json({ ok: true, clipper: r.clipper });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Créer / modifier un clipper depuis l'admin du site.
+  // body: { guildId?, name, youtube?, tiktok?, instagram?, link?, client? }  (champ absent = inchangé, "-" = effacer)
+  app.post('/api/clippers/upsert', auth, (req, res) => {
+    try {
+      const b = req.body || {};
+      const guildId = String(b.guildId || process.env.GUILD_ID || '').replace(/[^0-9A-Za-z_-]/g, '');
+      if (!guildId) return res.status(400).json({ error: 'No guild: send guildId or set GUILD_ID' });
+      if (!b.name) return res.status(400).json({ error: 'Missing name' });
+      const pick = k => (typeof b[k] === 'string' ? b[k] : undefined);
+      const r = upsertClipper(guildId, b.name, { youtube: pick('youtube'), tiktok: pick('tiktok'), instagram: pick('instagram'), link: pick('link'), client: pick('client') }, 'admin-site');
+      if (r.error) return res.status(400).json({ error: r.error });
+      res.json({ ok: true, created: r.created, clipper: { ...r.clipper, guildId } });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/clippers/remove', auth, (req, res) => {
+    try {
+      const b = req.body || {};
+      const guildId = String(b.guildId || process.env.GUILD_ID || '').replace(/[^0-9A-Za-z_-]/g, '');
+      if (!guildId || !b.name) return res.status(400).json({ error: 'Missing guildId or name' });
+      const removed = removeClipper(guildId, b.name);
+      if (!removed) return res.status(404).json({ error: 'Clipper not found' });
+      res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
