@@ -98,6 +98,7 @@ client.once(Events.ClientReady, async (c) => {
     console.log(r.skipped ? `[COMMANDS] Already up to date (${r.names.length} commands)` : `[COMMANDS] Registered ${r.names.length} commands: ${r.names.join(', ')}`);
   } catch (e) { console.error('[COMMANDS] Failed to register:', e.message); }
   try { require('./clickmagick').startClickTracking(); } catch (e) { console.error('[CLICKMAGICK]', e.message); }
+  try { require('./views-tracker').startViewsTracking(); } catch (e) { console.error('[VIEWS]', e.message); }
   try { scheduleDailyCheck(client); } catch(e) { console.error('[CRON ERROR]', e.message); }
   console.log('[BOT] Fully initialized and running');
 });
