@@ -162,6 +162,8 @@ async function refreshViews({ force = false } = {}) {
       const recent = p.date_key >= cutoff;
       if (!known) return true;
       if (!recent) { stats.skippedOld++; return false; }
+      // déjà vérifié il y a moins de 20h (ex. passage interrompu par un redémarrage) : on ne repaie pas
+      if (!force && known.checkedAt && !known.error && Date.now() - new Date(known.checkedAt).getTime() < 20 * 3600 * 1000) { stats.skippedFresh = (stats.skippedFresh || 0) + 1; return false; }
       return true;
     });
     todo.sort((a, b) => (!cache.byUrl[a.key] - !cache.byUrl[b.key]) * -1 || String(b.date_key).localeCompare(String(a.date_key)));
@@ -204,7 +206,7 @@ async function refreshViews({ force = false } = {}) {
     if (stats.updated || !stats.errors.length) cache.updatedAt = cache.lastRun;
     if (stats.errors.length) cache.error = stats.errors[0];
     cache.stats = stats;
-    console.log(`[VIEWS] ${stats.updated}/${stats.scraped} liens mis à jour (${stats.missing} introuvables, ${stats.skippedOld} anciens ignorés)`);
+    console.log(`[VIEWS] ${stats.updated}/${stats.scraped} liens mis à jour (${stats.missing} introuvables, ${stats.skippedOld} anciens ignorés, ${stats.skippedFresh || 0} déjà à jour)`);
     return { ok: true, stats };
   } catch (e) {
     cache.error = e.message; console.error('[VIEWS]', e.message);
@@ -219,10 +221,18 @@ function viewsForUrl(url) {
   const e = cache.byUrl[normUrl(url)];
   return e && typeof e.views === 'number' && (e.views > 0 || !e.error) ? e.views : null;
 }
+// canaux des clients cochés : seuls leurs posts affichent des vues
+function trackedChannels() {
+  const set = new Set();
+  for (const c of trackedClients()) for (const ch of c.channels || []) set.add(String(ch.id));
+  return set;
+}
 function summary() {
   const byPlatform = {};
   let total = 0, tracked = 0;
-  for (const e of Object.values(cache.byUrl)) {
+  const keep = new Set(collectPosts().map(p => p.key)); // uniquement les liens des clients suivis
+  for (const [k, e] of Object.entries(cache.byUrl)) {
+    if (!keep.has(k)) continue;
     if (!e || typeof e.views !== 'number') continue;
     total += e.views; tracked++;
     byPlatform[e.platform] = (byPlatform[e.platform] || 0) + e.views;
@@ -241,4 +251,4 @@ function startViewsTracking() {
   console.log(`[VIEWS] Suivi des vues Apify actif (cron "${expr}" Europe/Paris, ${trackedClients().length} client(s) suivi(s), max ${process.env.VIEWS_MAX_PER_RUN || 600} liens/passage)`);
 }
 
-module.exports = { startViewsTracking, refreshViews, viewsForUrl, summary, normUrl, hasToken };
+module.exports = { startViewsTracking, refreshViews, viewsForUrl, summary, normUrl, hasToken, trackedChannels };

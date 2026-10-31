@@ -45,7 +45,7 @@ function startAPI() {
       } else {
         db = { posts: [], known_users: {} };
       }
-      res.json({ month: monthParam, posts: (db.posts || []).map(p => ({ ...p, views: viewsTracker.viewsForUrl(p.video_url) })), known_users: db.known_users || {} });
+      res.json({ month: monthParam, posts: (() => { const tr = viewsTracker.trackedChannels(); return (db.posts || []).map(p => ({ ...p, views: tr.has(String(p.channel_id)) ? viewsTracker.viewsForUrl(p.video_url) : null })); })(), known_users: db.known_users || {} });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -69,7 +69,7 @@ function startAPI() {
         seen.add(key);
         return true;
       });
-      res.json({ posts: unique.map(p => ({ ...p, views: viewsTracker.viewsForUrl(p.video_url) })), known_users: knownUsers, viewsTracking: viewsTracker.summary() });
+      res.json({ posts: (() => { const tr = viewsTracker.trackedChannels(); return unique.map(p => ({ ...p, views: tr.has(String(p.channel_id)) ? viewsTracker.viewsForUrl(p.video_url) : null })); })(), known_users: knownUsers, viewsTracking: viewsTracker.summary() });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
