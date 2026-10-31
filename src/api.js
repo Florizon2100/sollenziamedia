@@ -4,6 +4,7 @@ const fs      = require('fs');
 const path    = require('path');
 const { getAllClippers, assignClient, upsertClipper, removeClipper } = require('./clippers');
 const { clicksFor, hasKey: clicksEnabled } = require('./clickmagick');
+const viewsTracker = require('./views-tracker');
 
 const dataDir = process.env.RAILWAY_VOLUME_MOUNT_PATH
   ? process.env.RAILWAY_VOLUME_MOUNT_PATH
@@ -44,7 +45,7 @@ function startAPI() {
       } else {
         db = { posts: [], known_users: {} };
       }
-      res.json({ month: monthParam, posts: db.posts || [], known_users: db.known_users || {} });
+      res.json({ month: monthParam, posts: (db.posts || []).map(p => ({ ...p, views: viewsTracker.viewsForUrl(p.video_url) })), known_users: db.known_users || {} });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -68,10 +69,18 @@ function startAPI() {
         seen.add(key);
         return true;
       });
-      res.json({ posts: unique, known_users: knownUsers });
+      res.json({ posts: unique.map(p => ({ ...p, views: viewsTracker.viewsForUrl(p.video_url) })), known_users: knownUsers, viewsTracking: viewsTracker.summary() });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
+  });
+
+  // Suivi des vues (Apify) : résumé + lancement manuel
+  app.get('/api/views/summary', auth, (req, res) => res.json(viewsTracker.summary()));
+  app.post('/api/views/refresh', auth, (req, res) => {
+    if (!viewsTracker.hasToken()) return res.status(400).json({ error: 'APIFY_TOKEN manquant sur Railway' });
+    viewsTracker.refreshViews().catch(() => {});
+    res.json({ ok: true, started: true });
   });
 
   app.get('/api/config', auth, (req, res) => {
