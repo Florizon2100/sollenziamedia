@@ -65,21 +65,33 @@ function trackedClients() {
 }
 
 // ─── Collecte des posts des clients suivis (tous serveurs, tous mois) ──────── (tous serveurs, tous mois) ───────────────────
+let lastSkip = { total: 0, dup: 0, noLink: 0, unsupported: 0, bad: [] };
 function collectPosts() {
   const channelIds = new Set();
   for (const c of trackedClients()) for (const ch of c.channels || []) channelIds.add(String(ch.id));
+  lastSkip = { total: 0, dup: 0, noLink: 0, unsupported: 0, bad: [] };
   if (!channelIds.size) return [];
   const out = new Map(); // normUrl -> { url, platform, date_key, channel_id }
+  const seenPost = new Set();
   let files = [];
   try { files = fs.readdirSync(dataDir).filter(f => f.startsWith('posts-') || f === 'posts.json'); } catch {}
   for (const f of files) {
     let db; try { db = JSON.parse(fs.readFileSync(path.join(dataDir, f), 'utf8')); } catch { continue; }
     for (const p of db.posts || []) {
-      if (!p.video_url || !channelIds.has(String(p.channel_id))) continue;
+      if (!channelIds.has(String(p.channel_id))) continue;
+      const pk = `${p.date_key}|${p.video_url}|${p.user_id}`;
+      if (seenPost.has(pk)) continue; seenPost.add(pk);   // même post présent dans 2 fichiers
+      lastSkip.total++;
+      if (!p.video_url) { lastSkip.noLink++; continue; }
       const platform = detectPlatform(p.video_url, p.platform);
-      if (!platform || !videoId(p.video_url, platform)) continue;
+      if (!platform || !videoId(p.video_url, platform)) {
+        lastSkip.unsupported++;
+        if (lastSkip.bad.length < 5) lastSkip.bad.push(String(p.video_url).slice(0, 90));
+        continue;
+      }
       const k = normUrl(p.video_url);
-      if (!out.has(k)) out.set(k, { url: p.video_url, platform, date_key: p.date_key || '', channel_id: p.channel_id });
+      if (out.has(k)) { lastSkip.dup++; continue; }
+      out.set(k, { url: p.video_url, platform, date_key: p.date_key || '', channel_id: p.channel_id });
     }
   }
   return [...out.entries()].map(([k, v]) => ({ key: k, ...v }));
@@ -170,7 +182,9 @@ async function refreshViews({ force = false } = {}) {
     todo = todo.slice(0, maxPerRun);
     const tc = trackedClients();
     if (!tc.length) console.log('[VIEWS] Aucun client sélectionné — cochez « Track views with Apify » dans l\'admin (Client Settings)');
-    console.log(`[VIEWS] Passage démarré : ${todo.length} lien(s) à scraper pour ${tc.map(c => c.name).join(', ') || '—'} (${all.length} posts suivis au total)`);
+    console.log(`[VIEWS] Posts des clients suivis : ${lastSkip.total} · liens uniques valides : ${all.length} · doublons (même lien posté plusieurs fois) : ${lastSkip.dup} · sans lien : ${lastSkip.noLink} · lien non reconnu : ${lastSkip.unsupported}`);
+    if (lastSkip.bad.length) console.log('[VIEWS] Exemples de liens non reconnus : ' + lastSkip.bad.join('  |  '));
+    console.log(`[VIEWS] Passage démarré : ${todo.length} lien(s) à scraper pour ${tc.map(c => c.name).join(', ') || '—'} (${all.length} liens uniques)`);
 
     for (const platform of ['tiktok', 'instagram', 'youtube']) {
       const group = todo.filter(p => p.platform === platform);
