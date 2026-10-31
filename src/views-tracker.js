@@ -55,15 +55,27 @@ function videoId(url, platform) {
 }
 const normUrl = u => String(u || '').trim().replace(/[?#].*$/, '').replace(/\/+$/, '').toLowerCase();
 
-// ─── Collecte de tous les posts (tous serveurs, tous mois) ───────────────────
+// ─── Clients suivis (cochés dans l'admin : Client Settings > "Track views with Apify") ──
+function trackedClients() {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(dataDir, 'admin-config.json'), 'utf8'));
+    const sett = cfg.clientSettings || {};
+    return (cfg.clients || []).filter(c => sett[c.id] && sett[c.id].apifyViews === true);
+  } catch { return []; }
+}
+
+// ─── Collecte des posts des clients suivis (tous serveurs, tous mois) ──────── (tous serveurs, tous mois) ───────────────────
 function collectPosts() {
+  const channelIds = new Set();
+  for (const c of trackedClients()) for (const ch of c.channels || []) channelIds.add(String(ch.id));
+  if (!channelIds.size) return [];
   const out = new Map(); // normUrl -> { url, platform, date_key, channel_id }
   let files = [];
   try { files = fs.readdirSync(dataDir).filter(f => f.startsWith('posts-') || f === 'posts.json'); } catch {}
   for (const f of files) {
     let db; try { db = JSON.parse(fs.readFileSync(path.join(dataDir, f), 'utf8')); } catch { continue; }
     for (const p of db.posts || []) {
-      if (!p.video_url) continue;
+      if (!p.video_url || !channelIds.has(String(p.channel_id))) continue;
       const platform = detectPlatform(p.video_url, p.platform);
       if (!platform || !videoId(p.video_url, platform)) continue;
       const k = normUrl(p.video_url);
@@ -154,12 +166,16 @@ async function refreshViews({ force = false } = {}) {
     });
     todo.sort((a, b) => (!cache.byUrl[a.key] - !cache.byUrl[b.key]) * -1 || String(b.date_key).localeCompare(String(a.date_key)));
     todo = todo.slice(0, maxPerRun);
+    const tc = trackedClients();
+    if (!tc.length) console.log('[VIEWS] Aucun client sélectionné — cochez « Track views with Apify » dans l\'admin (Client Settings)');
+    console.log(`[VIEWS] Passage démarré : ${todo.length} lien(s) à scraper pour ${tc.map(c => c.name).join(', ') || '—'} (${all.length} posts suivis au total)`);
 
     for (const platform of ['tiktok', 'instagram', 'youtube']) {
       const group = todo.filter(p => p.platform === platform);
       for (let i = 0; i < group.length; i += BATCH) {
         const chunk = group.slice(i, i + BATCH);
         try {
+          console.log(`[VIEWS] ${platform}: lot de ${chunk.length} lien(s) envoyé à Apify…`);
           const items = await runActor(platform, chunk.map(p => p.url));
           const byId = new Map();
           for (const it of items) for (const id of idsOf(it, platform)) if (!byId.has(id)) byId.set(id, it);
@@ -211,7 +227,7 @@ function summary() {
     total += e.views; tracked++;
     byPlatform[e.platform] = (byPlatform[e.platform] || 0) + e.views;
   }
-  return { enabled: hasToken(), running: cache.running, updatedAt: cache.updatedAt, lastRun: cache.lastRun, error: cache.error, stats: cache.stats, tracked, total, byPlatform };
+  return { enabled: hasToken(), clients: trackedClients().map(c => c.name), running: cache.running, updatedAt: cache.updatedAt, lastRun: cache.lastRun, error: cache.error, stats: cache.stats, tracked, total, byPlatform };
 }
 
 // ─── Planification : une fois toutes les 24h ─────────────────────────────────
@@ -222,7 +238,7 @@ function startViewsTracking() {
   // Au démarrage : rattrape si le dernier passage date de plus de 24h (ou n'a jamais eu lieu)
   const age = cache.lastRun ? Date.now() - new Date(cache.lastRun).getTime() : Infinity;
   if (age > 24 * 3600 * 1000) setTimeout(() => refreshViews().catch(() => {}), 60 * 1000);
-  console.log(`[VIEWS] Suivi des vues Apify actif (cron "${expr}" Europe/Paris, max ${process.env.VIEWS_MAX_PER_RUN || 600} liens/passage)`);
+  console.log(`[VIEWS] Suivi des vues Apify actif (cron "${expr}" Europe/Paris, ${trackedClients().length} client(s) suivi(s), max ${process.env.VIEWS_MAX_PER_RUN || 600} liens/passage)`);
 }
 
 module.exports = { startViewsTracking, refreshViews, viewsForUrl, summary, normUrl, hasToken };
