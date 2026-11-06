@@ -124,8 +124,10 @@ async function handleClipperAutocomplete(interaction) {
     if (!interaction.guildId) return await interaction.respond([]);
     const f = interaction.options.getFocused(true);
     const names = f.name === 'client' ? clippers.searchClients(f.value) : clippers.searchNames(interaction.guildId, f.value);
+    if (f.name === 'client' && !names.length && !f.value) console.warn('[CLIPPERS] Autocomplete client : aucun client dans admin-config.json — dans l\'admin, clique « Push Local Data to Railway »');
     await interaction.respond(names.map(n => ({ name: n.slice(0, 100), value: n.slice(0, 100) })));
-  } catch {
+  } catch (e) {
+    console.error('[CLIPPERS] Autocomplete :', e.message);
     try { await interaction.respond([]); } catch {}
   }
 }
