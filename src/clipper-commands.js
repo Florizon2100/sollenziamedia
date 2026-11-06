@@ -15,7 +15,8 @@ function getClipperCommands() {
       .addStringOption(o => o.setName('tiktok').setDescription('TikTok @handle or profile link (- to clear)').setMaxLength(200))
       .addStringOption(o => o.setName('instagram').setDescription('Instagram @handle or profile link (- to clear)').setMaxLength(200))
       .addStringOption(o => o.setName('link').setDescription('Bio link, e.g. ClickMagick (- to clear)').setMaxLength(500))
-      .addStringOption(o => o.setName('client').setDescription('Client this clipper works for (- to clear)').setAutocomplete(true).setMaxLength(100)),
+      .addStringOption(o => o.setName('client').setDescription('Client this clipper works for (- to clear)').setAutocomplete(true).setMaxLength(100))
+      .addStringOption(o => o.setName('discord').setDescription('Discord username(s) used with /posted, comma separated (- to clear)').setMaxLength(200)),
 
     new SlashCommandBuilder()
       .setName('clipperstats')
@@ -46,6 +47,7 @@ function clipperEmbed(c, color, title) {
       accountLine('🎵 TikTok', c.tiktok),
       accountLine('📸 Instagram', c.instagram),
       `🔗 Link: ${c.link ? c.link : '—'}`,
+      `💬 Discord: ${(c.discord && c.discord.length) ? c.discord.join(', ') : '—'}`,
       `🏢 Client: ${c.clientName || '—'}`,
     ].join('\n'))
     .setTimestamp();
@@ -70,6 +72,7 @@ async function handleClipperCommand(interaction) {
       instagram: interaction.options.getString('instagram'),
       link:      interaction.options.getString('link'),
       client:    interaction.options.getString('client'),
+      discord:   interaction.options.getString('discord'),
     };
     const r = clippers.upsertClipper(g, name, fields, interaction.user.id);
     if (r.error) return interaction.reply({ content: `❌ ${r.error}`, ephemeral: true });

@@ -158,6 +158,15 @@ function upsertClipper(guildId, name, fields, addedBy = null) {
     }
   }
 
+  if (fields.discord !== undefined && fields.discord !== null) {
+    if (isClear(fields.discord)) updates.discord = [];
+    else {
+      const names = String(fields.discord).split(/[,;\n]/).map(x => x.trim().replace(/^@/, '')).filter(Boolean);
+      if (names.length > 10) return { error: 'Discord : 10 pseudos max.' };
+      if (names.some(x => x.length > 40)) return { error: 'Discord : pseudo trop long.' };
+      updates.discord = names;
+    }
+  }
   if (fields.client !== undefined && fields.client !== null) {
     if (isClear(fields.client)) { updates.clientId = null; updates.clientName = null; }
     else {
@@ -176,7 +185,7 @@ function upsertClipper(guildId, name, fields, addedBy = null) {
   let clipper = db.clippers.find(c => c.id === id);
   const created = !clipper;
   if (created) {
-    clipper = { id, name: cleanName, youtube: null, tiktok: null, instagram: null, link: null, clientId: null, clientName: null, createdAt: now, addedBy };
+    clipper = { id, name: cleanName, youtube: null, tiktok: null, instagram: null, link: null, discord: [], clientId: null, clientName: null, createdAt: now, addedBy };
     db.clippers.push(clipper);
   }
   Object.assign(clipper, updates);

@@ -142,7 +142,7 @@ function startAPI() {
       if (!guildId) return res.status(400).json({ error: 'No guild: send guildId or set GUILD_ID' });
       if (!b.name) return res.status(400).json({ error: 'Missing name' });
       const pick = k => (typeof b[k] === 'string' ? b[k] : undefined);
-      const r = upsertClipper(guildId, b.name, { youtube: pick('youtube'), tiktok: pick('tiktok'), instagram: pick('instagram'), link: pick('link'), client: pick('client') }, 'admin-site');
+      const r = upsertClipper(guildId, b.name, { youtube: pick('youtube'), tiktok: pick('tiktok'), instagram: pick('instagram'), link: pick('link'), client: pick('client'), discord: pick('discord') }, 'admin-site');
       if (r.error) return res.status(400).json({ error: r.error });
       res.json({ ok: true, created: r.created, clipper: { ...r.clipper, guildId } });
     } catch (err) {
