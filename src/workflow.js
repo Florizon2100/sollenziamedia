@@ -97,7 +97,8 @@ function mountWorkflow(app, { dataDir, secret }) {
 
     res.json({ ok: true, role, board: { cards: board.cards, rev: board.rev } });
 
-    // Notifications Discord après la réponse (la page n'attend pas Discord)
+    // Notifications Discord : uniquement pour ce que fait le CLIENT (jamais pour tes propres actions)
+    if (role !== 'client') return;
     for (const ev of result.events) {
       const card = board.cards.find(c => c.id === ev.cardId) || result.card;
       notify(ev.kind, client, card, role, ev.text).then(r => {
@@ -117,12 +118,12 @@ function mountWorkflow(app, { dataDir, secret }) {
   });
 
   /* ───────── Discord ───────── */
+  // Seules ces actions du client envoient un message (approbations, commentaires sur une idée… : rien)
   const KINDS = {
-    idea:     { title: '💡 New idea',               color: 0x3b63f3 },
-    cut:      { title: '🎬 New video to review',     color: 0x6c4ec1 },
-    revision: { title: '✏️ Revision requested',      color: 0xb8710b },
-    reopen:   { title: '↩️ Reopened for revisions',  color: 0xb8710b },
-    test:     { title: '✅ Discord is connected',     color: 0x16823b },
+    idea:         { title: '💡 New idea',           color: 0x3b63f3 },
+    revision:     { title: '💬 New review',         color: 0x6c4ec1 },
+    idea_deleted: { title: '🗑️ Idea deleted',       color: 0xe64343 },
+    test:         { title: '✅ Discord is connected', color: 0x16823b },
   };
   const NAMES = { instagram: 'Instagram', tiktok: 'TikTok', youtube: 'YouTube', facebook: 'Facebook' };
   const cut = (s, n) => { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
@@ -140,7 +141,7 @@ function mountWorkflow(app, { dataDir, secret }) {
       fields.push({ name: 'Platforms', value: core.cleanPlatforms(card.platforms, client.platforms).map(p => NAMES[p]).join(', '), inline: true });
       if (card.col !== 'inspo') fields.push({ name: 'Version', value: 'V' + (card.version || 1), inline: true });
       const l = card.col === 'inspo' ? card.link : card.video;
-      if (/^https?:\/\//i.test(l || '')) fields.push({ name: card.col === 'inspo' ? 'Reference' : 'Video', value: cut(l, 1000) });
+      if (kind !== 'idea_deleted' && /^https?:\/\//i.test(l || '')) fields.push({ name: card.col === 'inspo' ? 'Reference' : 'Video', value: cut(l, 1000) });
     }
     const embed = {
       title: cut(`${k.title} · ${card ? card.title : client.name}`, 256),

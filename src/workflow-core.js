@@ -147,6 +147,7 @@
         const c = get(a.id);
         if (!canDelete(c, by)) fail(403, 'Only your Sollenzia editor can delete videos.');
         cards.splice(cards.indexOf(c), 1);
+        if (c.col === 'inspo') events.push({ kind: 'idea_deleted', cardId: c.id });
         return { board, events, card: c };
       }
 
