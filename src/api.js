@@ -175,6 +175,10 @@ function startAPI() {
     }
   });
 
+  // Tableau workflow client (idées → review → prêt à poster)
+  try { require('./workflow').mountWorkflow(app, { dataDir, secret: SECRET }); }
+  catch (e) { console.error('[WORKFLOW] Failed to load:', e.message); }
+
   app.listen(PORT, () => {
     console.log(`[API] Running on port ${PORT}`);
   });
