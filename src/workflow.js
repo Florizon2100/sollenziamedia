@@ -1,92 +1,140 @@
 /* ─────────────────────────────────────────────────────────────
-   Sollenzia — Workflow API (tableau client : idées → review → prêt)
+   Sollenzia — Workflow API (tableau client : idées → review → prêt → posté)
 
-   GET  /api/workflow/:key               → infos client + tableau
-   POST /api/workflow/:key/action        → { type, ... } une modification
-   POST /api/workflow/:key/test-discord  → message de test (éditeur seulement)
+   Tableau
+     GET  /api/workflow/:key               → infos client + tableau + ton rôle
+     POST /api/workflow/:key/action        → { type, ... } une modification
+     POST /api/workflow/:key/test-discord  → message de test (propriétaire)
+       :key = "Client URL Key" du client (lien client)
+            ou "id:<clientId>" pour un monteur (jamais la clé du client)
 
-   :key = la "Client URL Key" du client (même clé que le lien dashboard).
-   Rôle : header x-api-key = API_SECRET → éditeur ("Sollenzia Editor"), sinon → client.
-   Le rôle est décidé ici, jamais par la page.
+   Monteurs
+     GET  /api/workflow-editor/me          → nom du monteur + ses clients   (header x-editor-token)
+     GET  /api/workflow-admin/editors      → liste                          (header x-api-key)
+     POST /api/workflow-admin/editors      → { name, clients: [ids] | 'all' } crée un monteur
+     POST /api/workflow-admin/editors/:id  → { name?, clients?, regenerate?, delete? }
 
-   Variables Railway :
-     WORKFLOW_DISCORD_WEBHOOK  webhook Discord pour les notifications (obligatoire pour Discord)
-     SITE_URL                  défaut https://sollenzia.com (lien dans les messages Discord)
-   Stockage : <volume>/workflows/<clientId>.json
+   Rôles (décidés ici, jamais par la page)
+     x-api-key = API_SECRET              → owner  (toi)
+     x-editor-token valide + client lié  → editor (monteur)
+     sinon, avec la clé client           → client
+
+   Variables Railway
+     WORKFLOW_DISCORD_WEBHOOK  webhook Discord par défaut (seules les actions du CLIENT envoient un message)
+                               Chaque client peut avoir le sien : Admin → client → Settings → "Discord webhook".
+     SITE_URL                  défaut https://sollenzia.com
+   Stockage : <volume>/workflows/<clientId>.json et <volume>/workflows/_editors.json
    ───────────────────────────────────────────────────────────── */
-const fs    = require('fs');
-const path  = require('path');
-const https = require('https');
-const http  = require('http');
-const core  = require('./workflow-core');
+const fs     = require('fs');
+const path   = require('path');
+const https  = require('https');
+const http   = require('http');
+const crypto = require('crypto');
+const core   = require('./workflow-core');
 
-const EDITOR = 'Sollenzia Editor';
+// Seuls les vrais webhooks Discord sont acceptés (jamais une autre adresse)
+const WEBHOOK_RE = /^https:\/\/(?:ptb\.|canary\.)?(?:discord|discordapp)\.com\/api\/webhooks\/\d+\/[\w-]+\/?$/;
 
 function mountWorkflow(app, { dataDir, secret }) {
   const dir = path.join(dataDir, 'workflows');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   const SITE = (process.env.SITE_URL || 'https://sollenzia.com').replace(/\/+$/, '');
 
-  function readConfig() {
-    try { return JSON.parse(fs.readFileSync(path.join(dataDir, 'admin-config.json'), 'utf8')); }
-    catch { return {}; }
-  }
+  /* ───────── fichiers ───────── */
+  function readJSON(f, fallback) { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return fallback; } }
+  function writeJSON(f, data) { const tmp = f + '.tmp'; fs.writeFileSync(tmp, JSON.stringify(data), 'utf8'); fs.renameSync(tmp, f); }
+  const readConfig = () => readJSON(path.join(dataDir, 'admin-config.json'), {});
 
-  // Trouve le client par sa clé. Le nom ("will-silva") ne marche que si le client n'a pas de clé.
-  function findClient(key) {
+  /* ───────── clients ───────── */
+  function clientInfo(cfg, c) {
+    const s = (cfg.clientSettings || {})[c.id] || {};
+    const platforms = core.PLATS.filter(p => (s.workflowPlatforms || []).includes(p));
+    return {
+      id: String(c.id).replace(/[^\w-]/g, ''),
+      rawId: String(c.id),
+      key: c.clientSecret || (c.name || '').toLowerCase().replace(/\s+/g, '-'),
+      name: c.name || 'Client',
+      enabled: s.customWorkflow === true,
+      mode: s.workflowMode || 'US Strategy Room',
+      platforms: platforms.length ? platforms : ['instagram'],
+      webhook: WEBHOOK_RE.test(String(s.workflowWebhook || '').trim()) ? String(s.workflowWebhook).trim() : null,
+    };
+  }
+  // Clé client (lien client). Le nom ("will-silva") ne marche que si le client n'a pas de clé.
+  function clientByKey(key) {
     key = String(key || '').trim();
     if (!key) return null;
     const cfg = readConfig();
     const c = (cfg.clients || []).find(c =>
       (c.clientSecret && c.clientSecret === key) ||
       (!c.clientSecret && (c.name || '').toLowerCase().replace(/\s+/g, '-') === key.toLowerCase()));
-    if (!c) return null;
-    const s = (cfg.clientSettings || {})[c.id] || {};
-    const platforms = core.PLATS.filter(p => (s.workflowPlatforms || []).includes(p));
-    return {
-      id: String(c.id).replace(/[^\w-]/g, ''),
-      key,
-      name: c.name || 'Client',
-      enabled: s.customWorkflow === true,
-      mode: s.workflowMode || 'US Strategy Room',
-      platforms: platforms.length ? platforms : ['instagram'],
-    };
+    return c ? clientInfo(cfg, c) : null;
+  }
+  function clientById(id) {
+    const cfg = readConfig();
+    const c = (cfg.clients || []).find(c => String(c.id) === String(id));
+    return c ? clientInfo(cfg, c) : null;
+  }
+
+  /* ───────── monteurs ───────── */
+  const EDITORS_FILE = path.join(dir, '_editors.json');
+  const loadEditors = () => { const d = readJSON(EDITORS_FILE, null); return d && Array.isArray(d.editors) ? d : { editors: [] }; };
+  const saveEditors = d => writeJSON(EDITORS_FILE, d);
+  const newToken = () => crypto.randomBytes(18).toString('base64url');
+  const sameToken = (a, b) => { const x = Buffer.from(String(a)), y = Buffer.from(String(b)); return x.length === y.length && crypto.timingSafeEqual(x, y); };
+  function editorByToken(token) {
+    if (!token || String(token).length < 16) return null;
+    return loadEditors().editors.find(e => e.active !== false && sameToken(e.token, token)) || null;
+  }
+  const editorHasClient = (ed, client) => ed && (ed.clients === 'all' || (Array.isArray(ed.clients) && ed.clients.map(String).includes(client.rawId)));
+  const isOwner = req => !!secret && req.headers['x-api-key'] === secret;
+
+  /* Qui fait la requête, et sur quel client ? */
+  function resolve(req) {
+    const key = String(req.params.key || '');
+    const owner = isOwner(req);
+    const ed = owner ? null : editorByToken(req.headers['x-editor-token']);
+    if (key.startsWith('id:')) {
+      const client = clientById(key.slice(3));
+      if (!client) return { error: [404, 'unknown_client'] };
+      if (owner) return { client, role: 'owner', name: 'Sollenzia' };
+      if (ed && editorHasClient(ed, client)) return { client, role: 'editor', name: ed.name };
+      return { error: [403, 'This editor link has no access to this client. Ask Sollenzia.'] };
+    }
+    const client = clientByKey(key);
+    if (!client) return { error: [404, 'unknown_client'] };
+    if (owner) return { client, role: 'owner', name: 'Sollenzia' };
+    if (ed && editorHasClient(ed, client)) return { client, role: 'editor', name: ed.name };
+    return { client, role: 'client' };
   }
 
   const fileFor = client => path.join(dir, `${client.id}.json`);
   function loadBoard(client) {
-    try { const b = JSON.parse(fs.readFileSync(fileFor(client), 'utf8')); if (Array.isArray(b.cards)) return b; } catch {}
-    return { cards: [], rev: 0, updatedAt: 0 };
+    const b = readJSON(fileFor(client), null);
+    return b && Array.isArray(b.cards) ? b : { cards: [], rev: 0, updatedAt: 0 };
   }
-  function saveBoard(client, board) {
-    const f = fileFor(client), tmp = f + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(board), 'utf8');
-    fs.renameSync(tmp, f); // écriture atomique : jamais de fichier à moitié écrit
-  }
-
-  const roleOf = req => (secret && req.headers['x-api-key'] === secret ? 'editor' : 'client');
+  const saveBoard = (client, board) => writeJSON(fileFor(client), board);
   const publicClient = c => ({ name: c.name, mode: c.mode, platforms: c.platforms, enabled: c.enabled });
+  const counts = cards => core.COLS.reduce((o, col) => (o[col] = cards.filter(c => c.col === col).length, o), {});
 
-  // ── Lecture du tableau ──
+  /* ═════════ Tableau ═════════ */
   app.get('/api/workflow/:key', (req, res) => {
-    const client = findClient(req.params.key);
-    if (!client) return res.status(404).json({ error: 'unknown_client' });
-    const role = roleOf(req);
-    const board = loadBoard(client);
+    const r = resolve(req);
+    if (r.error) return res.status(r.error[0]).json({ error: r.error[1] });
+    const board = loadBoard(r.client);
     res.set('Cache-Control', 'no-store');
-    res.json({ client: publicClient(client), role, board: { cards: board.cards, rev: board.rev || 0 } });
+    res.json({ client: publicClient(r.client), role: r.role, me: r.name || null, board: { cards: board.cards, rev: board.rev || 0 } });
   });
 
-  // ── Une modification ──
   app.post('/api/workflow/:key/action', (req, res) => {
-    const client = findClient(req.params.key);
-    if (!client) return res.status(404).json({ error: 'unknown_client' });
-    const role = roleOf(req);
-    if (!client.enabled && role !== 'editor') return res.status(403).json({ error: 'The workflow board is not enabled for this client.' });
+    const r = resolve(req);
+    if (r.error) return res.status(r.error[0]).json({ error: r.error[1] });
+    const { client, role } = r;
+    if (!client.enabled && role === 'client') return res.status(403).json({ error: 'The workflow board is not enabled for this client.' });
     const board = loadBoard(client);
     let result;
     try {
-      result = core.apply(board, req.body || {}, role, { platforms: client.platforms });
+      result = core.apply(board, req.body || {}, role, { platforms: client.platforms, name: r.name });
     } catch (e) {
       return res.status(e.status || 400).json({ error: e.message });
     }
@@ -97,45 +145,95 @@ function mountWorkflow(app, { dataDir, secret }) {
 
     res.json({ ok: true, role, board: { cards: board.cards, rev: board.rev } });
 
-    // Notifications Discord : uniquement pour ce que fait le CLIENT (jamais pour tes propres actions)
+    // Discord : uniquement ce que fait le CLIENT (jamais toi ni tes monteurs)
     if (role !== 'client') return;
     for (const ev of result.events) {
       const card = board.cards.find(c => c.id === ev.cardId) || result.card;
-      notify(ev.kind, client, card, role, ev.text).then(r => {
-        if (r && !r.ok && !r.skipped) console.error('[WORKFLOW] Discord:', r.error);
-      });
+      notify(ev.kind, client, card, ev.text).then(x => { if (x && !x.ok && !x.skipped) console.error('[WORKFLOW] Discord:', x.error); });
     }
   });
 
-  // ── Test Discord (éditeur) ──
   app.post('/api/workflow/:key/test-discord', async (req, res) => {
-    const client = findClient(req.params.key);
-    if (!client) return res.status(404).json({ error: 'unknown_client' });
-    if (roleOf(req) !== 'editor') return res.status(401).json({ error: 'Editor only' });
-    const r = await notify('test', client, null, 'editor', `Notifications for ${client.name}'s board will arrive here.`);
-    if (r.skipped) return res.status(400).json({ ok: false, error: 'WORKFLOW_DISCORD_WEBHOOK is not set in Railway → Variables.' });
-    res.status(r.ok ? 200 : 502).json(r);
+    const r = resolve(req);
+    if (r.error) return res.status(r.error[0]).json({ error: r.error[1] });
+    if (r.role !== 'owner') return res.status(401).json({ error: 'Owner only' });
+    const x = await notify('test', r.client, null, `Notifications for ${r.client.name}'s board will arrive here.`);
+    if (x.skipped) return res.status(400).json({ ok: false, error: 'No webhook for this client. Add one in Admin → client Settings, or set WORKFLOW_DISCORD_WEBHOOK in Railway.' });
+    res.status(x.ok ? 200 : 502).json({ ...x, source: r.client.webhook ? 'client' : 'default' });
   });
 
-  /* ───────── Discord ───────── */
-  // Seules ces actions du client envoient un message (approbations, commentaires sur une idée… : rien)
+  /* ═════════ Monteur : ses clients ═════════ */
+  app.get('/api/workflow-editor/me', (req, res) => {
+    const ed = editorByToken(req.headers['x-editor-token']);
+    if (!ed) return res.status(401).json({ error: 'This editor link is not valid anymore. Ask Sollenzia for a new one.' });
+    const cfg = readConfig();
+    const list = (cfg.clients || [])
+      .map(c => clientInfo(cfg, c))
+      .filter(c => editorHasClient(ed, c))
+      .map(c => {
+        const cards = loadBoard(c).cards;
+        const needs = cards.filter(x => x.col === 'review' && x.status === 'changes').length;
+        return { id: c.rawId, name: c.name, counts: counts(cards), changes: needs };
+      });
+    res.set('Cache-Control', 'no-store');
+    res.json({ name: ed.name, clients: list });
+  });
+
+  /* ═════════ Admin : gérer les monteurs (propriétaire) ═════════ */
+  const ownerOnly = (req, res) => { if (isOwner(req)) return true; res.status(401).json({ error: 'Unauthorized' }); return false; };
+  const cleanClients = v => (v === 'all' ? 'all' : (Array.isArray(v) ? [...new Set(v.map(String))].slice(0, 200) : []));
+  const publicEditor = e => ({ id: e.id, name: e.name, token: e.token, clients: e.clients, active: e.active !== false, createdAt: e.createdAt, url: `${SITE}/workflow?e=${e.token}` });
+
+  app.get('/api/workflow-admin/editors', (req, res) => {
+    if (!ownerOnly(req, res)) return;
+    res.json({ editors: loadEditors().editors.map(publicEditor) });
+  });
+
+  app.post('/api/workflow-admin/editors', (req, res) => {
+    if (!ownerOnly(req, res)) return;
+    const name = String((req.body || {}).name || '').trim().slice(0, 60);
+    if (!name) return res.status(400).json({ error: 'Name required' });
+    const d = loadEditors();
+    const e = { id: 'ed_' + crypto.randomBytes(5).toString('hex'), name, token: newToken(), clients: cleanClients(req.body.clients), active: true, createdAt: Date.now() };
+    d.editors.push(e);
+    saveEditors(d);
+    res.json({ editor: publicEditor(e) });
+  });
+
+  app.post('/api/workflow-admin/editors/:id', (req, res) => {
+    if (!ownerOnly(req, res)) return;
+    const d = loadEditors();
+    const e = d.editors.find(x => x.id === req.params.id);
+    if (!e) return res.status(404).json({ error: 'Editor not found' });
+    const b = req.body || {};
+    if (b.delete) { d.editors = d.editors.filter(x => x !== e); saveEditors(d); return res.json({ ok: true, deleted: true }); }
+    if (typeof b.name === 'string' && b.name.trim()) e.name = b.name.trim().slice(0, 60);
+    if (b.clients !== undefined) e.clients = cleanClients(b.clients);
+    if (typeof b.active === 'boolean') e.active = b.active;
+    if (b.regenerate) e.token = newToken(); // l'ancien lien ne marche plus
+    saveEditors(d);
+    res.json({ editor: publicEditor(e) });
+  });
+
+  /* ═════════ Discord ═════════ */
+  // Seules ces actions du client envoient un message (approbation, "posté", commentaires sur une idée : rien)
   const KINDS = {
-    idea:         { title: '💡 New idea',           color: 0x3b63f3 },
-    revision:     { title: '💬 New review',         color: 0x6c4ec1 },
-    idea_deleted: { title: '🗑️ Idea deleted',       color: 0xe64343 },
+    idea:         { title: '💡 New idea',            color: 0x3b63f3 },
+    revision:     { title: '💬 New review',          color: 0x6c4ec1 },
+    idea_deleted: { title: '🗑️ Idea deleted',        color: 0xe64343 },
     test:         { title: '✅ Discord is connected', color: 0x16823b },
   };
   const NAMES = { instagram: 'Instagram', tiktok: 'TikTok', youtube: 'YouTube', facebook: 'Facebook' };
   const cut = (s, n) => { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
 
-  function notify(kind, client, card, role, text) {
-    const url = process.env.WORKFLOW_DISCORD_WEBHOOK;
+  function notify(kind, client, card, text) {
+    const url = client.webhook || process.env.WORKFLOW_DISCORD_WEBHOOK;   // webhook du client, sinon celui par défaut
     const k = KINDS[kind];
-    if (!k) return Promise.resolve({ ok: true, skipped: true }); // approvals, comments on ideas: no ping
+    if (!k) return Promise.resolve({ ok: true, skipped: true });
     if (!url) return Promise.resolve({ ok: false, skipped: true });
     const fields = [
       { name: 'Client', value: cut(client.name, 100), inline: true },
-      { name: 'By', value: role === 'editor' ? EDITOR : cut(client.name, 100), inline: true },
+      { name: 'By', value: cut(client.name, 100), inline: true },
     ];
     if (card) {
       fields.push({ name: 'Platforms', value: core.cleanPlatforms(card.platforms, client.platforms).map(p => NAMES[p]).join(', '), inline: true });
@@ -179,7 +277,7 @@ function mountWorkflow(app, { dataDir, secret }) {
     });
   }
 
-  console.log('[WORKFLOW] Routes ready' + (process.env.WORKFLOW_DISCORD_WEBHOOK ? ' (Discord on)' : ' (Discord off: set WORKFLOW_DISCORD_WEBHOOK)'));
+  console.log('[WORKFLOW] Routes ready' + (process.env.WORKFLOW_DISCORD_WEBHOOK ? ' · default Discord webhook on' : ' · no default Discord webhook (per-client webhooks still work)'));
 }
 
 module.exports = { mountWorkflow };
