@@ -8,6 +8,13 @@
        :key = "Client URL Key" du client (lien client)
             ou "id:<clientId>" pour un monteur (jamais la clé du client)
 
+   Notifications téléphone (web push, pour le client)
+     POST /api/workflow/:key/push/subscribe    → { subscription } ce téléphone reçoit les notifs
+     POST /api/workflow/:key/push/unsubscribe  → { endpoint }
+     POST /api/workflow/:key/push/test         → { endpoint } notif de test sur ce téléphone
+     Le client est notifié quand l'équipe met une vidéo en review (nouvelle vidéo, idée → review, nouvelle version).
+     Les clés sont créées toutes seules dans le volume (workflows/_vapid.json).
+
    Monteurs
      GET  /api/workflow-editor/me          → nom du monteur + ses clients   (header x-editor-token)
      GET  /api/workflow-admin/editors      → liste                          (header x-api-key)
@@ -23,7 +30,7 @@
      WORKFLOW_DISCORD_WEBHOOK  webhook Discord par défaut (seules les actions du CLIENT envoient un message)
                                Chaque client peut avoir le sien : Admin → client → Settings → "Discord webhook".
      SITE_URL                  défaut https://sollenzia.com
-   Stockage : <volume>/workflows/<clientId>.json et <volume>/workflows/_editors.json
+   Stockage : <volume>/workflows/<clientId>.json, <clientId>.push.json, _editors.json, _vapid.json
    ───────────────────────────────────────────────────────────── */
 const fs     = require('fs');
 const path   = require('path');
@@ -31,6 +38,12 @@ const https  = require('https');
 const http   = require('http');
 const crypto = require('crypto');
 const core   = require('./workflow-core');
+let webpush = null;
+try { webpush = require('web-push'); } catch { /* pas installé → pas de notifs téléphone */ }
+
+// Services de notification des navigateurs (Apple, Google, Mozilla, Microsoft) — rien d'autre
+const PUSH_HOSTS = ['web.push.apple.com', 'push.apple.com', 'fcm.googleapis.com', 'android.googleapis.com', 'push.services.mozilla.com', 'notify.windows.com'];
+const isPushEndpoint = u => { try { const x = new URL(u); return x.protocol === 'https:' && PUSH_HOSTS.some(h => x.hostname === h || x.hostname.endsWith('.' + h)); } catch { return false; } };
 
 // Seuls les vrais webhooks Discord sont acceptés (jamais une autre adresse)
 const WEBHOOK_RE = /^https:\/\/(?:ptb\.|canary\.)?(?:discord|discordapp)\.com\/api\/webhooks\/\d+\/[\w-]+\/?$/;
@@ -123,7 +136,8 @@ function mountWorkflow(app, { dataDir, secret }) {
     if (r.error) return res.status(r.error[0]).json({ error: r.error[1] });
     const board = loadBoard(r.client);
     res.set('Cache-Control', 'no-store');
-    res.json({ client: publicClient(r.client), role: r.role, me: r.name || null, board: { cards: board.cards, rev: board.rev || 0 } });
+    const v = vapid();
+    res.json({ client: publicClient(r.client), role: r.role, me: r.name || null, features: { push: v ? v.publicKey : null }, board: { cards: board.cards, rev: board.rev || 0 } });
   });
 
   app.post('/api/workflow/:key/action', (req, res) => {
@@ -146,11 +160,101 @@ function mountWorkflow(app, { dataDir, secret }) {
     res.json({ ok: true, role, board: { cards: board.cards, rev: board.rev } });
 
     // Discord : uniquement ce que fait le CLIENT (jamais toi ni tes monteurs)
-    if (role !== 'client') return;
+    // Téléphone du client : quand l'ÉQUIPE met une vidéo en review
     for (const ev of result.events) {
       const card = board.cards.find(c => c.id === ev.cardId) || result.card;
-      notify(ev.kind, client, card, ev.text).then(x => { if (x && !x.ok && !x.skipped) console.error('[WORKFLOW] Discord:', x.error); });
+      if (role === 'client') {
+        notify(ev.kind, client, card, ev.text).then(x => { if (x && !x.ok && !x.skipped) console.error('[WORKFLOW] Discord:', x.error); });
+      } else if (ev.kind === 'cut' && card && card.col === 'review') {
+        pushToClient(client, {
+          title: card.version > 1 ? `🎬 New version to review (V${card.version})` : '🎬 New video to review',
+          body: card.title,
+          url: `/workflow?c=${encodeURIComponent(client.key)}&card=${encodeURIComponent(card.id)}`,
+          tag: card.id,
+        });
+      }
     }
+  });
+
+  /* ═════════ Notifications téléphone (web push) ═════════ */
+  const VAPID_FILE = path.join(dir, '_vapid.json');
+  let vapidCache = null;
+  function vapid() {
+    if (!webpush) return null;
+    if (vapidCache) return vapidCache;
+    let v = process.env.WEB_PUSH_PUBLIC_KEY && process.env.WEB_PUSH_PRIVATE_KEY
+      ? { publicKey: process.env.WEB_PUSH_PUBLIC_KEY, privateKey: process.env.WEB_PUSH_PRIVATE_KEY }
+      : readJSON(VAPID_FILE, null);
+    if (!v || !v.publicKey || !v.privateKey) { v = webpush.generateVAPIDKeys(); writeJSON(VAPID_FILE, v); console.log('[WORKFLOW] Push keys created'); }
+    webpush.setVapidDetails(process.env.WEB_PUSH_SUBJECT || SITE, v.publicKey, v.privateKey);
+    return (vapidCache = v);
+  }
+  const pushFile = client => path.join(dir, `${client.id}.push.json`);
+  const loadSubs = client => { const d = readJSON(pushFile(client), null); return d && Array.isArray(d.subs) ? d : { subs: [] }; };
+
+  async function sendPush(sub, payload) {
+    try {
+      await webpush.sendNotification({ endpoint: sub.endpoint, keys: sub.keys }, JSON.stringify(payload), { TTL: 86400, urgency: 'high', topic: String(payload.tag || 'sollenzia').replace(/[^\w-]/g, '').slice(0, 32) || undefined });
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, gone: e.statusCode === 404 || e.statusCode === 410, error: e.statusCode ? `Push service answered ${e.statusCode}` : e.message };
+    }
+  }
+  function forgetSubs(client, endpoints) {
+    if (!endpoints.length) return;
+    const d = loadSubs(client);                       // relu : on ne perd pas un abonnement ajouté entre-temps
+    d.subs = d.subs.filter(x => !endpoints.includes(x.endpoint));
+    writeJSON(pushFile(client), d);
+  }
+  async function pushToClient(client, payload) {
+    if (!vapid()) return;
+    const targets = loadSubs(client).subs.filter(x => x.role === 'client');
+    if (!targets.length) return;
+    const results = await Promise.all(targets.map(x => sendPush(x, payload)));
+    const gone = targets.filter((x, i) => results[i].gone).map(x => x.endpoint);
+    results.forEach((r, i) => { if (!r.ok && !r.gone) console.error('[WORKFLOW] push', client.name, r.error); });
+    forgetSubs(client, gone);                          // téléphone désinstallé / notifs coupées
+  }
+
+  app.post('/api/workflow/:key/push/subscribe', (req, res) => {
+    const r = resolve(req);
+    if (r.error) return res.status(r.error[0]).json({ error: r.error[1] });
+    if (!vapid()) return res.status(501).json({ error: 'Phone notifications are not installed on Railway yet.' });
+    const sub = (req.body || {}).subscription || {};
+    const keys = sub.keys || {};
+    if (!isPushEndpoint(sub.endpoint) || typeof keys.p256dh !== 'string' || typeof keys.auth !== 'string' || keys.p256dh.length > 200 || keys.auth.length > 100) {
+      return res.status(400).json({ error: 'This browser sent an invalid subscription.' });
+    }
+    const d = loadSubs(r.client);
+    d.subs = d.subs.filter(x => x.endpoint !== sub.endpoint);
+    d.subs.push({ endpoint: sub.endpoint, keys: { p256dh: keys.p256dh, auth: keys.auth }, role: r.role, name: r.name || null, createdAt: Date.now() });
+    if (d.subs.length > 30) d.subs = d.subs.slice(-30);
+    writeJSON(pushFile(r.client), d);
+    res.json({ ok: true });
+  });
+
+  app.post('/api/workflow/:key/push/unsubscribe', (req, res) => {
+    const r = resolve(req);
+    if (r.error) return res.status(r.error[0]).json({ error: r.error[1] });
+    forgetSubs(r.client, [String((req.body || {}).endpoint || '')]);
+    res.json({ ok: true });
+  });
+
+  app.post('/api/workflow/:key/push/test', async (req, res) => {
+    const r = resolve(req);
+    if (r.error) return res.status(r.error[0]).json({ error: r.error[1] });
+    if (!vapid()) return res.status(501).json({ error: 'Phone notifications are not installed on Railway yet.' });
+    const endpoint = String((req.body || {}).endpoint || '');
+    const sub = loadSubs(r.client).subs.find(x => x.endpoint === endpoint);
+    if (!sub) return res.status(404).json({ error: 'This phone is not registered. Turn notifications on again.' });
+    const x = await sendPush(sub, {
+      title: '✅ Notifications are on',
+      body: `You'll get a notification here when a new video is ready to review.`,
+      url: `/workflow?c=${encodeURIComponent(r.client.key)}`,
+      tag: 'test',
+    });
+    if (x.gone) forgetSubs(r.client, [endpoint]);
+    res.status(x.ok ? 200 : 502).json(x);
   });
 
   app.post('/api/workflow/:key/test-discord', async (req, res) => {
@@ -277,7 +381,8 @@ function mountWorkflow(app, { dataDir, secret }) {
     });
   }
 
-  console.log('[WORKFLOW] Routes ready' + (process.env.WORKFLOW_DISCORD_WEBHOOK ? ' · default Discord webhook on' : ' · no default Discord webhook (per-client webhooks still work)'));
+  console.log('[WORKFLOW] Routes ready' + (process.env.WORKFLOW_DISCORD_WEBHOOK ? ' · default Discord webhook on' : ' · no default Discord webhook (per-client webhooks still work)')
+    + (vapid() ? ' · phone notifications on' : ' · phone notifications off (web-push not installed)'));
 }
 
 module.exports = { mountWorkflow };
