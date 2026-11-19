@@ -126,7 +126,7 @@
         }
         place(c, col, 0);
         if (col === 'inspo') events.push({ kind: 'idea', cardId: c.id });
-        if (col === 'review') events.push({ kind: 'cut', cardId: c.id, text: note });
+        if (col === 'review' && c.video) events.push({ kind: 'cut', cardId: c.id, text: note });
         return { board, events, card: c };
       }
 
@@ -135,12 +135,13 @@
         const text = str(a.text, 4000);
         const cut = canUploadCut(c, role) ? link(a.cut) : '';
         if (!text && !cut) fail(400, 'Write a message first.');
+        const firstVideo = !!cut && !c.video;
         if (cut) {
+          c.version = firstVideo ? (c.version || 1) : (c.version || 1) + 1;   // 1er lien = V1, les suivants = V2, V3…
           c.video = cut;
-          c.version = (c.version || 1) + 1;
           if (c.col === 'ready') c.master = cut; else c.status = 'awaiting';
         }
-        const msg = text || `V${c.version} uploaded.`;
+        const msg = text || (firstVideo ? 'Video uploaded.' : `V${c.version} uploaded.`);
         say(c, msg);
         if (by === 'editor' && c.col !== 'inspo') {
           c.notes = Array.isArray(c.notes) ? c.notes : [];
@@ -190,7 +191,13 @@
             c.version = c.version || 1;
             c.notes = Array.isArray(c.notes) ? c.notes : [];
             if (from === 'ready' || from === 'posted') { c.status = 'changes'; say(c, 'Reopened for changes.', true); events.push({ kind: 'reopen', cardId: c.id }); }
-            else { c.status = 'awaiting'; say(c, 'Moved to review.', true); events.push({ kind: 'cut', cardId: c.id }); }
+            else {
+              c.status = 'awaiting';
+              const v = role !== 'client' ? link(a.video) : '';
+              if (v && !c.video) c.video = v;
+              say(c, c.video ? 'Moved to review with the video.' : 'Moved to review (no video yet).', true);
+              if (c.video) events.push({ kind: 'cut', cardId: c.id });   // pas de vidéo → pas de notif
+            }
           } else {
             say(c, 'Moved back to ideas.', true);
           }
