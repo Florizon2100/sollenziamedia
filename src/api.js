@@ -175,6 +175,10 @@ function startAPI() {
     }
   });
 
+  // Sauvegarde complète du volume (lecture seule) : GET /api/backup
+  try { require('./backup').mountBackup(app, { dataDir, secret: SECRET }); }
+  catch (e) { console.error('[BACKUP] Failed to load:', e.message); }
+
   // Tableau workflow client (idées → review → prêt à poster)
   try { require('./workflow').mountWorkflow(app, { dataDir, secret: SECRET }); }
   catch (e) { console.error('[WORKFLOW] Failed to load:', e.message); }
