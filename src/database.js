@@ -103,7 +103,7 @@ function insertPost({ guildId, userId, username, channelId, channelName, platfor
   const year = parseInt(dateKey.slice(0,4)), month = parseInt(dateKey.slice(5,7));
   const db   = loadDB(guildId, year, month);
   const id   = (db.posts.length > 0 ? Math.max(...db.posts.map(p => p.id)) : 0) + 1;
-  db.posts.push({ id, user_id: userId, username, channel_id: channelId, channel_name: channelName, platform, video_url: videoUrl, posted_at: postedAt, date_key: dateKey });
+  db.posts.push({ id, user_id: userId, username, channel_id: channelId, channel_name: channelName, platform, video_url: videoUrl, posted_at: postedAt, date_key: dateKey, logged_at: now.toISOString() });
   db.known_users[userId] = { user_id: userId, username, updated_at: now.toISOString() };
   saveDB(guildId, db, year, month);
   return id;
@@ -125,7 +125,7 @@ function insertMultiplePosts({ guildId, userId, username, channelId, channelName
   let maxId  = db.posts.length > 0 ? Math.max(...db.posts.map(p => p.id)) : 0;
   for (const videoUrl of videoUrls) {
     maxId++;
-    db.posts.push({ id: maxId, user_id: userId, username, channel_id: channelId, channel_name: channelName, platform, video_url: videoUrl, posted_at: postedAt, date_key: dateKey });
+    db.posts.push({ id: maxId, user_id: userId, username, channel_id: channelId, channel_name: channelName, platform, video_url: videoUrl, posted_at: postedAt, date_key: dateKey, logged_at: now.toISOString() });
   }
   db.known_users[userId] = { user_id: userId, username, updated_at: now.toISOString() };
   saveDB(guildId, db, year, month);
