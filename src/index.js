@@ -100,6 +100,7 @@ client.once(Events.ClientReady, async (c) => {
   try { require('./clickmagick').startClickTracking(); } catch (e) { console.error('[CLICKMAGICK]', e.message); }
   try { require('./views-tracker').startViewsTracking(); } catch (e) { console.error('[VIEWS]', e.message); }
   try { scheduleDailyCheck(client); } catch(e) { console.error('[CRON ERROR]', e.message); }
+  try { require('./admin2').attachDiscord(client); } catch (e) { console.error('[ADMIN2]', e.message); }
   console.log('[BOT] Fully initialized and running');
 });
 

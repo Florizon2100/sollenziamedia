@@ -18,6 +18,7 @@ function startAPI() {
   app.use(cors({ origin: '*', methods: ['GET','POST','OPTIONS'], allowedHeaders: ['x-api-key','x-editor-token','Content-Type'] }));
   app.options('*', cors());
   app.use(express.json({ limit: '2mb' }));
+  let admin2 = null;
 
   function auth(req, res, next) {
     const key = req.headers['x-api-key'] || req.query.key;
@@ -96,6 +97,8 @@ function startAPI() {
   app.post('/api/config', auth, (req, res) => {
     try {
       const configPath = path.join(dataDir, 'admin-config.json');
+      // copie de sécurité avant que l'ancien admin écrive (récupérable depuis admin2 → Réglages)
+      try { admin2 && admin2.snapshotConfig('old-admin'); } catch {}
       // Merge with existing config to not lose data
       let existing = {};
       if (fs.existsSync(configPath)) {
@@ -174,6 +177,10 @@ function startAPI() {
       res.status(500).json({ error: err.message });
     }
   });
+
+  // Nouvel admin (admin2.html) : état complet, enregistrement automatique, sauvegardes quotidiennes
+  try { admin2 = require('./admin2').mountAdmin2(app, { dataDir, secret: SECRET }); }
+  catch (e) { console.error('[ADMIN2] Failed to load:', e.message); }
 
   // Sauvegarde complète du volume (lecture seule) : GET /api/backup
   try { require('./backup').mountBackup(app, { dataDir, secret: SECRET }); }

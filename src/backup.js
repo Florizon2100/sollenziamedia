@@ -23,7 +23,8 @@ function mountBackup(app, { dataDir, secret }) {
       for (const e of entries) {
         const abs = path.join(dir, e.name);
         const r = rel ? rel + '/' + e.name : e.name;
-        if (e.isDirectory()) { if (e.name !== 'node_modules' && e.name !== 'lost+found') walk(abs, r); continue; }
+        // backups/ = copies déjà sur Railway : on ne les remet pas dans le téléchargement (?history=1 pour les inclure)
+        if (e.isDirectory()) { if (e.name !== 'node_modules' && e.name !== 'lost+found' && (e.name !== 'backups' || rel || req.query.history === '1')) walk(abs, r); continue; }
         if (!e.isFile() || e.name.endsWith('.tmp')) continue;
         let buf;
         try { buf = fs.readFileSync(abs); } catch { skipped.push(r); continue; }
