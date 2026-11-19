@@ -182,6 +182,10 @@ function startAPI() {
   try { admin2 = require('./admin2').mountAdmin2(app, { dataDir, secret: SECRET }); }
   catch (e) { console.error('[ADMIN2] Failed to load:', e.message); }
 
+  // Données publiques d'un client (pages dashboard / classement / snapshot, sans clé API)
+  try { require('./public').mountPublic(app, { dataDir }); }
+  catch (e) { console.error('[PUBLIC] Failed to load:', e.message); }
+
   // Sauvegarde complète du volume (lecture seule) : GET /api/backup
   try { require('./backup').mountBackup(app, { dataDir, secret: SECRET }); }
   catch (e) { console.error('[BACKUP] Failed to load:', e.message); }

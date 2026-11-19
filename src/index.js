@@ -121,7 +121,7 @@ client.on(Events.GuildCreate, async (guild) => {
 // ─── Router ───────────────────────────────────────────────────────────────────
 
 client.on(Events.InteractionCreate, async (interaction) => {
-  if (interaction.isAutocomplete()) { if (isClipperCommand(interaction.commandName)) return await handleClipperAutocomplete(interaction); return; }
+  if (interaction.isAutocomplete()) { if (isClipperCommand(interaction.commandName)) return await handleClipperAutocomplete(interaction); if (interaction.commandName === 'leaderboardsend') return await require('./leaderboard-send').autocomplete(interaction); return; }
   if (interaction.isStringSelectMenu()) return await handleSelectMenu(interaction);
   if (!interaction.isChatInputCommand()) return;
   const { commandName } = interaction;
@@ -151,6 +151,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (commandName === 'analytics')       return await handleAnalytics(interaction);
     if (commandName === 'leaderboard-week') return await handleWeeklyLeaderboard(interaction);
     if (commandName === 'announcement')    return await handleAnnouncement(interaction);
+    if (commandName === 'leaderboardsend') return await require('./leaderboard-send').handle(interaction);
     if (isClipperCommand(commandName))     return await handleClipperCommand(interaction);
   } catch (err) {
     console.error(`[ERROR] /${commandName}:`, err?.message || err);

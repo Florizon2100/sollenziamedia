@@ -36,6 +36,7 @@ const SETTINGS_KEYS = {
   workflowMode: 'str', workflowPlatforms: 'plats', workflowWebhook: 'webhook',
 };
 const PLATS = ['instagram', 'tiktok', 'youtube', 'facebook'];
+const get = (o, p, fb) => { for (const k of p) { if (o == null) return fb; o = o[k]; } return o === undefined ? fb : o; };
 const V2_ROOTS = ['channels', 'people', 'finance', 'notify', 'prefs'];
 
 function mountAdmin2(app, { dataDir, secret }) {
@@ -269,11 +270,15 @@ function mountAdmin2(app, { dataDir, secret }) {
     }
     if (discord && discord.guilds) {
       for (const g of discord.guilds.cache.values()) {
-        const channels = {};
+        const channels = {}, categories = {};
         for (const ch of g.channels.cache.values()) {
-          if (ch.type === 0 || ch.type === 5) channels[ch.id] = { name: ch.name, parent: ch.parent ? ch.parent.name : null, position: ch.rawPosition };
+          if (ch.type === 0 || ch.type === 5) channels[ch.id] = { name: ch.name, parent: ch.parent ? ch.parent.name : null, parentId: ch.parentId || null, position: ch.rawPosition };
+          if (ch.type === 4) categories[ch.id] = { name: ch.name, position: ch.rawPosition };
         }
-        add(g.id, { name: g.name, icon: g.iconURL ? g.iconURL({ size: 64 }) : null, members: g.memberCount, channels, botIn: true });
+        const me = g.members.me, perms = me && me.permissions;
+        const has = f => { try { return !!(perms && perms.has(f)); } catch { return false; } };
+        add(g.id, { name: g.name, icon: g.iconURL ? g.iconURL({ size: 64 }) : null, members: g.memberCount, channels, categories, botIn: true,
+          perms: { manageChannels: has('ManageChannels'), manageMessages: has('ManageMessages') || has('PinMessages'), manageWebhooks: has('ManageWebhooks'), admin: has('Administrator') } });
       }
     }
     return guilds;
@@ -334,6 +339,7 @@ function mountAdmin2(app, { dataDir, secret }) {
         rev: cfg.v2.rev || 0,
         guilds: guildInfo(),
         channelGuild: channelGuildFromPosts(),
+        channelLast: (() => { try { const l = require('./alerts').lastPostByChannel(dataDir), o = {}; for (const [k, v] of Object.entries(l)) o[k] = v.t; return o; } catch { return {}; } })(),
         mainGuildId: process.env.GUILD_ID || null,
         botConnected: !!(discord && discord.isReady && discord.isReady()),
         workflows: workflowSummary(cfg),
@@ -387,7 +393,140 @@ function mountAdmin2(app, { dataDir, secret }) {
 
   app.post('/api/v2/backup-now', auth, (req, res) => res.json(dailyBackup()));
 
+  /* ═════════ Discord depuis le site (bot) ═════════ */
+  const serverConfig = require('./server-config');
+  const DOC_URL = 'https://docs.google.com/document/d/10Yg1iip60s9SyD9ytS3aa_w88Dtdj7qZVuKI4xKuFHQ/edit?tab=t.0';
+  const ready = () => discord && discord.isReady && discord.isReady();
+  const fail = (res, code, msg) => res.status(code).json({ error: msg });
+  const channelName = s => String(s || '').trim().toLowerCase().replace(/\s+/g, '-').replace(/[^\p{L}\p{N}_-]/gu, '').slice(0, 90);
+  const guildFor = (cfg, c, want) => {
+    if (want && discord.guilds.cache.has(String(want))) return discord.guilds.cache.get(String(want));
+    if (c.guildId && discord.guilds.cache.has(String(c.guildId))) return discord.guilds.cache.get(String(c.guildId));
+    const count = {};
+    for (const ch of c.channels || []) for (const g of discord.guilds.cache.values()) if (g.channels.cache.has(String(ch.id))) count[g.id] = (count[g.id] || 0) + 1;
+    const best = Object.entries(count).sort((a, b) => b[1] - a[1])[0];
+    return best ? discord.guilds.cache.get(best[0]) : null;
+  };
+  const instructions = () => [
+    '**How to log your videos 📌**',
+    '',
+    'Every time you post a video, log it here with the bot:',
+    '• `/posted` → 1 video: paste the **link** and pick the **platform**',
+    '• `/posted2` → 2 videos on the same platform at once',
+    '',
+    'Forgot a day? Add the **day** option (e.g. `day: 18`) to log it for that date.',
+    'Only post in **this** channel for this account. The guide is pinned above 👆',
+  ].join('\n');
+
+  app.post('/api/v2/discord/create-account', auth, async (req, res) => {
+    if (!ready()) return fail(res, 503, 'Le bot n’est pas connecté à Discord pour l’instant.');
+    const b = req.body || {}, cfg = loadConfig(), c = findClient(cfg, b.clientId);
+    if (!c) return fail(res, 404, 'Client introuvable');
+    const name = channelName(b.name);
+    if (!name) return fail(res, 400, 'Nom du compte manquant');
+    const guild = guildFor(cfg, c, b.guildId);
+    if (!guild) return fail(res, 400, 'Choisis d’abord le serveur Discord du client (Réglages du client).');
+    const cat = b.categoryId ? guild.channels.cache.get(String(b.categoryId)) : null;
+    if (b.categoryId && (!cat || cat.type !== 4)) return fail(res, 400, 'Cette catégorie n’existe pas sur le serveur du client.');
+    let ch;
+    try {
+      ch = await guild.channels.create({ name, type: 0, parent: cat ? cat.id : undefined, reason: 'Sollenzia admin: new account' });
+    } catch (e) { return fail(res, 403, 'Discord refuse de créer le salon (le bot a-t-il « Gérer les salons » ?) : ' + e.message); }
+    const warnings = [];
+    const docUrl = String(get(cfg, ['v2', 'prefs', 'docUrl'], DOC_URL) || DOC_URL);
+    try { const m = await ch.send(docUrl); try { await m.pin(); } catch (e) { warnings.push('Lien envoyé mais pas épinglé (droit « Gérer les messages » manquant).'); } }
+    catch (e) { warnings.push('Impossible d’envoyer le lien du guide : ' + e.message); }
+    try { await ch.send(instructions()); } catch (e) { warnings.push('Message d’explication non envoyé : ' + e.message); }
+    // le bot doit accepter /posted dans ce salon
+    try {
+      const gc = serverConfig.loadConfig(guild.id);
+      if ((gc.allowed_channel_ids || []).length) serverConfig.addAllowedChannel(guild.id, ch.id);
+      const modes = Object.values(gc.channel_modes || {});
+      if (modes.length && modes.filter(x => x === 'tracking-only').length > modes.length / 2) serverConfig.setChannelMode(guild.id, ch.id, 'tracking-only');
+    } catch (e) { warnings.push('Config du bot : ' + e.message); }
+    const { cfg: saved } = await withConfig(cfg2 => {
+      applyOp(cfg2, { op: 'channel.add', clientId: c.id, channel: { id: ch.id, name: ch.name } });
+      if (!c.guildId) { const cc = findClient(cfg2, c.id); if (cc) cc.guildId = guild.id; }
+      cfg2.v2.channels = cfg2.v2.channels || {};
+      cfg2.v2.channels[ch.id] = { ...(cfg2.v2.channels[ch.id] || {}), createdByBot: true, createdAt: Date.now() };
+      if (cat) { cfg2.v2.prefs = cfg2.v2.prefs || {}; cfg2.v2.prefs.lastCategory = cfg2.v2.prefs.lastCategory || {}; cfg2.v2.prefs.lastCategory[c.id] = cat.id; }
+    });
+    console.log(`[ADMIN2] Channel #${ch.name} created for ${c.name}`);
+    res.json({ ok: true, channel: { id: ch.id, name: ch.name }, warnings, config: saved });
+  });
+
+  app.post('/api/v2/discord/delete-channel', auth, async (req, res) => {
+    if (!ready()) return fail(res, 503, 'Le bot n’est pas connecté à Discord pour l’instant.');
+    const b = req.body || {}, cfg = loadConfig(), c = findClient(cfg, b.clientId);
+    if (!c) return fail(res, 404, 'Client introuvable');
+    const id = String(b.channelId || '');
+    if (!(c.channels || []).some(x => String(x.id) === id)) return fail(res, 400, 'Ce salon n’est pas un compte de ce client.');
+    let guildId = null;
+    try {
+      const ch = await discord.channels.fetch(id).catch(() => null);
+      if (ch) {
+        if (ch.type !== 0 && ch.type !== 5) return fail(res, 400, 'Ce n’est pas un salon texte.');
+        guildId = ch.guildId;
+        await ch.delete('Sollenzia admin: account deleted');
+      }
+    } catch (e) { return fail(res, 403, 'Discord refuse de supprimer le salon : ' + e.message); }
+    if (guildId) { try { serverConfig.removeAllowedChannel(guildId, id); serverConfig.unpauseChannel(guildId, id); } catch {} }
+    const { cfg: saved } = await withConfig(cfg2 => applyOp(cfg2, { op: 'channel.remove', clientId: c.id, channelId: id }));
+    res.json({ ok: true, deletedOnDiscord: !!guildId, config: saved });
+  });
+
+  app.post('/api/v2/discord/pause', auth, async (req, res) => {
+    const id = String((req.body || {}).channelId || ''), on = !!(req.body || {}).paused;
+    let guildId = null;
+    if (ready()) { const ch = await discord.channels.fetch(id).catch(() => null); if (ch) guildId = ch.guildId; }
+    if (!guildId) guildId = channelGuildFromPosts()[id] || null;
+    if (!guildId) return fail(res, 404, 'Serveur du salon introuvable');
+    if (on) serverConfig.pauseChannel(guildId, id); else serverConfig.unpauseChannel(guildId, id);
+    res.json({ ok: true, paused: on });
+  });
+
+  // Salon + webhook du client sur TON serveur de notifications (jamais de suppression)
+  app.post('/api/v2/discord/notify-setup', auth, async (req, res) => {
+    if (!ready()) return fail(res, 503, 'Le bot n’est pas connecté à Discord pour l’instant.');
+    const cfg = loadConfig(), c = findClient(cfg, (req.body || {}).clientId);
+    if (!c) return fail(res, 404, 'Client introuvable');
+    const existing = get(cfg, ['v2', 'notify', 'clients', c.id, 'webhook'], '') || get(cfg, ['clientSettings', c.id, 'workflowWebhook'], '');
+    if (existing && WEBHOOK_RE.test(existing)) return res.json({ ok: true, existing: true });
+    const gid = get(cfg, ['v2', 'notify', 'guildId'], ''), guild = gid && discord.guilds.cache.get(String(gid));
+    if (!guild) return fail(res, 400, 'Choisis ton serveur de notifications dans Réglages (le bot doit y être).');
+    const catId = get(cfg, ['v2', 'notify', 'categoryId'], ''), cat = catId ? guild.channels.cache.get(String(catId)) : null;
+    try {
+      const ch = await guild.channels.create({ name: channelName(c.name) || 'client', type: 0, parent: cat && cat.type === 4 ? cat.id : undefined, reason: 'Sollenzia: notifications for ' + c.name });
+      const hook = await ch.createWebhook({ name: 'Sollenzia', reason: 'Sollenzia notifications' });
+      const { cfg: saved } = await withConfig(cfg2 => {
+        cfg2.v2.notify = cfg2.v2.notify || {}; cfg2.v2.notify.clients = cfg2.v2.notify.clients || {};
+        cfg2.v2.notify.clients[c.id] = { ...(cfg2.v2.notify.clients[c.id] || {}), webhook: hook.url, channelId: ch.id };
+        const s = cfg2.clientSettings[c.id] = cfg2.clientSettings[c.id] || {};
+        if (!s.workflowWebhook) s.workflowWebhook = hook.url;
+      });
+      res.json({ ok: true, channel: ch.name, config: saved });
+    } catch (e) { fail(res, 403, 'Discord refuse (le bot a-t-il « Gérer les salons » et « Gérer les webhooks » sur ton serveur ?) : ' + e.message); }
+  });
+
+  /* ═════════ Alertes automatiques ═════════ */
+  const alerts = require('./alerts');
+  alerts.startAlerts({ dataDir, getConfig: loadConfig });
+  app.get('/api/v2/alerts', auth, (req, res) => {
+    try { res.json({ alerts: alerts.computeAlerts(dataDir, loadConfig()).map(a => ({ client: a.client.name, type: a.type, title: a.title })) }); }
+    catch (e) { res.status(500).json({ error: e.message }); }
+  });
+  app.post('/api/v2/alerts/test', auth, async (req, res) => {
+    const cfg = loadConfig(), c = findClient(cfg, (req.body || {}).clientId);
+    if (!c) return fail(res, 404, 'Client introuvable');
+    const hook = alerts.webhookFor(cfg, c);
+    if (!hook) return fail(res, 400, 'Pas de webhook pour ce client.');
+    const r = await alerts.postWebhook(hook, { username: 'Sollenzia · Alertes', embeds: [{ title: '✅ Les alertes arrivent ici', description: `Clippers inactifs, reviews en retard et paiements de **${c.name}**.`, color: 0x16823b }] });
+    r.ok ? res.json({ ok: true }) : fail(res, 502, 'Discord a refusé : ' + (r.status || r.error));
+  });
+
+  exported.updateConfig = fn => withConfig(fn);
   return { snapshotConfig };
 }
 
-module.exports = { mountAdmin2, attachDiscord };
+const exported = { updateConfig: null };
+module.exports = { mountAdmin2, attachDiscord, updateConfig: (fn) => { if (!exported.updateConfig) throw new Error('admin2 not ready'); return exported.updateConfig(fn); } };
