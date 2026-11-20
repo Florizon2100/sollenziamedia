@@ -1,7 +1,7 @@
 # Sollenzia — documentation complète du système
 
 > À donner en premier à toute nouvelle conversation avec Claude (ou à un développeur) pour reprendre le projet.
-> Dernière mise à jour : 20 novembre 2026.
+> Dernière mise à jour : 20 novembre 2026 (phase 4 livrée).
 
 ---
 
@@ -94,7 +94,7 @@ Règles importantes :
 | `API_SECRET` | **clé owner**. À changer si elle fuit (puis se reconnecter dans admin2) |
 | `RAILWAY_VOLUME_MOUNT_PATH` | dossier du volume (données) |
 | `ADMIN_USER_ID`, `LOG_CHANNEL_ID`, `ALLOWED_CHANNEL_IDS`, `DAILY_CHECK_HOUR` | réglages historiques du bot |
-| `APIFY_TOKEN`, `APIFY_ACTOR_YOUTUBE/TIKTOK/INSTAGRAM`, `VIEWS_CRON`, `VIEWS_MAX_PER_RUN`, `VIEWS_MAX_AGE_DAYS` | suivi des vues Apify (activé client par client dans admin2) |
+| `APIFY_TOKEN`, `APIFY_ACTOR_YOUTUBE/TIKTOK/INSTAGRAM`, `VIEWS_CRON`, `VIEWS_MAX_PER_RUN`, `VIEWS_MAX_AGE_DAYS` | suivi des vues Apify (activé client par client dans admin2). `APIFY_TOKEN` = clé **par défaut** ; un client peut avoir sa propre clé (`v2.apify.clients[id].token`) |
 | `CLICKMAGICK_API_KEY` | clics |
 | `WORKFLOW_DISCORD_WEBHOOK` | webhook workflow par défaut (si le client n’en a pas) |
 | `WEB_PUSH_PUBLIC_KEY`, `WEB_PUSH_PRIVATE_KEY`, `WEB_PUSH_SUBJECT` | facultatif : sinon les clés VAPID sont générées dans `workflows/_vapid.json` |
@@ -163,6 +163,7 @@ v2.notify                                  { enabled, guildId, categoryId, inact
                                              clients[idClient]: { webhook, channelId, types:{inactive,reviewLate,payment} } }
 v2.prefs                                   { ignore[clé]: {v, at, label}, docUrl, defaultCategory[idClient], lastCategory[idClient] }
 v2.trash.clients[]                         clients supprimés (récupérables)
+v2.apify.clients[idClient]                 { token, setAt }  clé Apify propre au client (sinon APIFY_TOKEN)
 ```
 
 ### 4.5 Un post
@@ -180,7 +181,7 @@ v2.trash.clients[]                         clients supprimés (récupérables)
 | Page | Pour qui | Notes |
 |---|---|---|
 | `index.html`, `about.html`, `faq.html`, `results.html`, `system.html` | public | site vitrine |
-| `dashboard.html` | client (`?c=CLÉ`) / toi (sans `?c`, vue agence avec ta clé du navigateur) | stats ; si `customWorkflow` → redirige vers `/workflow?c=CLÉ` (sauf `&analytics=1`) |
+| `dashboard.html` | client (`?c=CLÉ`) / toi (sans `?c`, vue agence avec ta clé du navigateur) | stats ; si `customWorkflow` → redirige vers `/workflow?c=CLÉ` (sauf `&analytics=1`). Ordre : chiffres (« Your page » = totaux manuels, « Our clipping » = posts) → Top videos (repliable) → graphiques → **Accounts** (jamais les clippers dès qu’un client est affiché) → Platforms → Latest videos (repliable) → More : Views by week (repliable) → témoignages. Dates lisibles (« 21 Nov »), noms de comptes sans `#`. Lien invalide → message clair |
 | `workflow.html` | client / monteur / toi | tableau Ideas → To review → Changes asked → Ready to post (+ Posted) |
 | `classement.html` | client (`?c=CLÉ`) | classement des comptes (clics) |
 | `snapshot.html` | client (`?c=CLÉ`) | résumé partageable |
@@ -240,11 +241,12 @@ Connexion : clé `API_SECRET`. Enregistrement **automatique** à chaque modifica
 - **Accueil** : chiffres du jour/mois, **À traiter** par client (comptes inactifs, reviews en retard, paiements à redemander), salons qui postent sans client. Chaque alerte : **Ignorer** (revient seulement si la situation change) ; paiement : **Paiement reçu**. Alertes ignorées consultables et réactivables.
 - **Clients** → page par client, onglets :
   - **Aperçu** : chiffres, à traiter, marge du mois, liens dashboard/workflow.
-  - **Comptes** : salons du client groupés **Inactifs récents / Actifs / Complètement inactifs**, clippers détectés par `/posted` (actifs = posté < 7 j), seuil d’alerte par compte, **Créer un compte** (le bot crée le salon), **Lier un salon existant**, Renommer, **Pause/Reprendre**, Retirer (de l’admin, ou supprimer aussi sur Discord).
+  - **Comptes** : salons du client groupés **Inactifs récents / Actifs / Complètement inactifs**, clippers détectés par `/posted` (actifs = posté < 7 j), seuil d’alerte par compte, **Créer un compte** (le bot crée le salon), **Lier un salon existant**, **Liens** (Instagram / TikTok / YouTube / lien de tracking du compte — enregistrés dans la même fiche que `/addclipper`, donc visibles sur le dashboard client, le classement et ClickMagick), Renommer, **Pause/Reprendre**, Retirer (de l’admin, ou supprimer aussi sur Discord).
   - **Stats** : **Totaux affichés sur le dashboard** (vues totales manuelles, posts, abonnés, likes), posts par jour, plateformes, **vues de la semaine** (total ou détail par compte), top vidéos, témoignages.
   - **Workflow** : activer, plateformes, nom du mode, webhook + Tester, cartes en review / en retard, monteurs.
   - **Finances** : début, cycle (7/14/30/31 j ou même date chaque mois), prochain paiement + Paiement reçu, **prix par mois**, tarifs clippers par compte **par mois** (par vidéo + plateformes comptées + fixe), autres coûts, marge.
-  - **Réglages** : nom, clé client (changer = les anciens liens cassent), serveur Discord, catégorie par défaut, affichage du dashboard, Apify, supprimer (corbeille).
+  - **Réglages** : nom, clé client (changer = les anciens liens cassent), serveur Discord, catégorie par défaut, affichage du dashboard, **Apify** (activer + **clé Apify du client**, vide = clé Railway ; bouton « Lancer maintenant »), supprimer (corbeille).
+- L’admin est utilisable sur **téléphone** (barre d’onglets en bas, comptes en cartes, tableaux en cartes).
 - **Équipe** : Clippers (client → comptes → clippers, statut, « aussi chez … », vrai nom) ; Monteurs (créer, clients, lien, nouveau lien, supprimer).
 - **Finances** : par client, paie des clippers du mois (**Tout marquer payé**), coûts généraux, devise.
 - **Réglages** : seuils d’alertes, notifications Discord (serveur, catégorie, salon par client, Tester), lien du guide épinglé, sauvegardes (télécharger, faire maintenant, historique + **Revenir à cette version**), corbeille, déconnexion.
@@ -358,15 +360,10 @@ Owner = header `x-api-key: API_SECRET`.
 
 1. **Changer `API_SECRET`** (voir §11).
 2. **Apify avec une clé par client** (aujourd’hui une seule clé `APIFY_TOKEN` pour tous).
-3. **Espace client à refaire** (validé sur le principe, pas encore codé hors point « comptes ») :
-   - séparer clairement « Your page » (chiffres manuels) et « Our clipping » (ce que l’équipe produit) — les clients confondaient vues manuelles et vues clipping ;
-   - résumé en haut (vues/posts de la semaine + évolution vs semaine dernière) ;
-   - ✅ comptes au lieu des clippers (fait le 20/11/2026) ;
-   - liste des posts plus claire, leaderboard en graphique, bulles « ? » d’explication ;
-   - un seul lien client avec onglets (Stats / Workflow / Top vidéos / Témoignages), pensé téléphone d’abord.
-4. **Admin sur téléphone** optimisé.
-5. Fusionner les liens des comptes (YouTube/TikTok/Instagram) dans « Comptes » à la place de l’ancien « Channel links ».
-6. Retirer l’ancien `admin.html` une fois admin2 validé.
+3. ✅ **Phase 4 (20/11/2026)** : comptes au lieu des clippers, nouvel ordre + blocs repliables, textes « Your page / Our clipping », dates lisibles, Apify avec clé par client, liens des comptes dans « Comptes », admin sur téléphone. Le lien client est unique : `dashboard?c=` ouvre le workflow si activé, avec un lien « Analytics » pour revenir aux stats.
+   - ❌ Une refonte visuelle complète du dashboard a été proposée (maquette violette) et **refusée** : le propriétaire préfère le style actuel, sobre. Ne pas changer le look sans demande.
+4. Idées possibles : vérifier qu’un lien `/posted` vient bien du compte du salon (grâce aux liens enregistrés) ; résumé « +X % vs last week » dans le style actuel ; bulles « ? » d’explication.
+5. Retirer l’ancien `admin.html` une fois admin2 validé (et l’ancien « Channel links »).
 7. Plus tard (pour vendre) : multi-agences (une agence = ses propres clients et données), comptes utilisateurs, abonnement (Stripe), onboarding. Idées de prix évoquées : setup + paliers 149 / 349 / 599 € par mois, prix fondateur.
 
 ---
