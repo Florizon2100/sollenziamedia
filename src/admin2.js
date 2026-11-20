@@ -37,7 +37,7 @@ const SETTINGS_KEYS = {
 };
 const PLATS = ['instagram', 'tiktok', 'youtube', 'facebook'];
 const get = (o, p, fb) => { for (const k of p) { if (o == null) return fb; o = o[k]; } return o === undefined ? fb : o; };
-const V2_ROOTS = ['channels', 'people', 'finance', 'notify', 'prefs'];
+const V2_ROOTS = ['channels', 'people', 'finance', 'notify', 'prefs', 'apify'];
 
 function mountAdmin2(app, { dataDir, secret }) {
   const CONFIG = path.join(dataDir, 'admin-config.json');

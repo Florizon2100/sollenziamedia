@@ -25,7 +25,18 @@ const ACTORS = {
 };
 const BATCH = 40;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const hasToken = () => !!process.env.APIFY_TOKEN;
+// Clé Apify : celle du client (admin2 → client → Réglages → Apify) sinon APIFY_TOKEN de Railway
+function readCfg() { try { return JSON.parse(fs.readFileSync(path.join(dataDir, 'admin-config.json'), 'utf8')); } catch { return {}; } }
+function clientToken(cfg, clientId) {
+  const t = (((cfg.v2 || {}).apify || {}).clients || {})[clientId];
+  return (t && typeof t.token === 'string' && t.token.trim()) || process.env.APIFY_TOKEN || '';
+}
+const hasToken = () => !!process.env.APIFY_TOKEN || trackedClients().some(c => !!clientToken(readCfg(), c.id));
+function tokenByChannel() {
+  const cfg = readCfg(), map = {};
+  for (const c of trackedClients()) { const t = clientToken(cfg, c.id); for (const ch of c.channels || []) map[String(ch.id)] = t; }
+  return map;
+}
 
 // ─── Cache ───────────────────────────────────────────────────────────────────
 let cache = { updatedAt: null, lastRun: null, running: false, error: null, stats: null, byUrl: {} };
@@ -98,10 +109,10 @@ function collectPosts() {
 }
 
 // ─── Appels Apify ────────────────────────────────────────────────────────────
-async function apify(pathname, opts = {}) {
+async function apify(pathname, opts = {}, token = process.env.APIFY_TOKEN) {
   const res = await fetch(APIFY + pathname, {
     ...opts,
-    headers: { Authorization: `Bearer ${process.env.APIFY_TOKEN}`, 'Content-Type': 'application/json', ...(opts.headers || {}) },
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(opts.headers || {}) },
   });
   return res;
 }
@@ -112,8 +123,8 @@ function buildInput(platform, urls) {
   return { startUrls: urls.map(url => ({ url })), maxResults: 1, maxResultsShorts: 1, maxResultsStreams: 0 };
 }
 
-async function runActor(platform, urls) {
-  const start = await apify(`/acts/${ACTORS[platform]}/runs`, { method: 'POST', body: JSON.stringify(buildInput(platform, urls)) });
+async function runActor(platform, urls, token) {
+  const start = await apify(`/acts/${ACTORS[platform]}/runs`, { method: 'POST', body: JSON.stringify(buildInput(platform, urls)) }, token);
   if (!start.ok) throw new Error(`Apify ${platform}: HTTP ${start.status} ${(await start.text()).slice(0, 160)}`);
   const run = (await start.json()).data;
   const deadline = Date.now() + 25 * 60 * 1000;
@@ -121,13 +132,13 @@ async function runActor(platform, urls) {
   while (!['SUCCEEDED', 'FAILED', 'ABORTED', 'TIMED-OUT'].includes(info.status)) {
     if (Date.now() > deadline) throw new Error(`Apify ${platform}: timeout`);
     await sleep(8000);
-    const r = await apify(`/actor-runs/${run.id}`);
+    const r = await apify(`/actor-runs/${run.id}`, {}, token);
     if (r.ok) info = (await r.json()).data;
   }
   if (info.status !== 'SUCCEEDED') throw new Error(`Apify ${platform}: run ${info.status}`);
   const items = [];
   for (let offset = 0; ; offset += 1000) {
-    const r = await apify(`/datasets/${info.defaultDatasetId}/items?clean=true&limit=1000&offset=${offset}`);
+    const r = await apify(`/datasets/${info.defaultDatasetId}/items?clean=true&limit=1000&offset=${offset}`, {}, token);
     if (!r.ok) throw new Error(`Apify dataset: HTTP ${r.status}`);
     const page = await r.json();
     items.push(...page);
@@ -157,7 +168,7 @@ function idsOf(item, platform) {
 
 // ─── Passage principal ───────────────────────────────────────────────────────
 async function refreshViews({ force = false } = {}) {
-  if (!hasToken()) return { ok: false, reason: 'APIFY_TOKEN manquant' };
+  if (!hasToken()) return { ok: false, reason: 'Aucune clé Apify (ni APIFY_TOKEN, ni clé client)' };
   if (cache.running) return { ok: false, reason: 'déjà en cours' };
   cache.running = true; cache.error = null; saveCache();
 
@@ -186,13 +197,19 @@ async function refreshViews({ force = false } = {}) {
     if (lastSkip.bad.length) console.log('[VIEWS] Exemples de liens non reconnus : ' + lastSkip.bad.join('  |  '));
     console.log(`[VIEWS] Passage démarré : ${todo.length} lien(s) à scraper pour ${tc.map(c => c.name).join(', ') || '—'} (${all.length} liens uniques)`);
 
+    // chaque client paie avec SA clé : on regroupe les liens par clé puis par plateforme
+    const tokOf = tokenByChannel();
+    const tokens = [...new Set(todo.map(p => tokOf[String(p.channel_id)] || ''))].filter(Boolean);
+    const noTok = todo.filter(p => !tokOf[String(p.channel_id)]).length;
+    if (noTok) console.log(`[VIEWS] ${noTok} lien(s) ignoré(s) : client sans clé Apify`);
+    for (const token of tokens)
     for (const platform of ['tiktok', 'instagram', 'youtube']) {
-      const group = todo.filter(p => p.platform === platform);
+      const group = todo.filter(p => p.platform === platform && tokOf[String(p.channel_id)] === token);
       for (let i = 0; i < group.length; i += BATCH) {
         const chunk = group.slice(i, i + BATCH);
         try {
           console.log(`[VIEWS] ${platform}: lot de ${chunk.length} lien(s) envoyé à Apify…`);
-          const items = await runActor(platform, chunk.map(p => p.url));
+          const items = await runActor(platform, chunk.map(p => p.url), token);
           const byId = new Map();
           for (const it of items) for (const id of idsOf(it, platform)) if (!byId.has(id)) byId.set(id, it);
           for (const p of chunk) {
@@ -256,9 +273,10 @@ function summary() {
 
 // ─── Planification : une fois toutes les 24h ─────────────────────────────────
 function startViewsTracking() {
-  if (!hasToken()) { console.log('[VIEWS] APIFY_TOKEN absent — suivi des vues désactivé'); return; }
+  // toujours planifié : une clé client ajoutée plus tard dans l'admin suffit pour que ça démarre
   const expr = process.env.VIEWS_CRON || '0 4 * * *';
-  cron.schedule(expr, () => { refreshViews().catch(e => console.error('[VIEWS]', e.message)); }, { timezone: 'Europe/Paris' });
+  cron.schedule(expr, () => { if (hasToken()) refreshViews().catch(e => console.error('[VIEWS]', e.message)); }, { timezone: 'Europe/Paris' });
+  if (!hasToken()) { console.log('[VIEWS] Aucune clé Apify pour l’instant — le suivi démarrera quand une clé sera ajoutée'); return; }
   // Au démarrage : rattrape si le dernier passage date de plus de 24h (ou n'a jamais eu lieu)
   const age = cache.lastRun ? Date.now() - new Date(cache.lastRun).getTime() : Infinity;
   if (age > 24 * 3600 * 1000) setTimeout(() => refreshViews().catch(() => {}), 60 * 1000);
