@@ -27,8 +27,12 @@ function mountPublic(app, { dataDir }) {
       const key = String(req.params.key || '').trim();
       const cfg = readJSON(path.join(dataDir, 'admin-config.json'), {}) || {};
       const slug = s => String(s || '').toLowerCase().replace(/\s+/g, '-');
-      const c = (cfg.clients || []).find(c => (c.clientSecret && c.clientSecret === key) ||
-        (!c.clientSecret && key && (slug(c.name) === key.toLowerCase() || String(c.name || '').toLowerCase() === key.toLowerCase())));
+      // mêmes liens qu'avant : clé du client (majuscules ignorées) ou nom du client (?c=Dmo, ?c=silva-twins)
+      const k = key.toLowerCase();
+      const list = cfg.clients || [];
+      const c = list.find(c => c.clientSecret && c.clientSecret === key)
+        || list.find(c => c.clientSecret && c.clientSecret.toLowerCase() === k)
+        || list.find(c => slug(c.name) === k || String(c.name || '').toLowerCase() === k);
       if (!key || !c) return res.status(404).json({ error: 'unknown_client' });
 
       const chIds = new Set((c.channels || []).map(ch => String(ch.id)));
