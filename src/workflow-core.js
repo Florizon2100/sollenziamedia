@@ -27,6 +27,19 @@
     if (/^[\w\-./]+$/.test(s) && !s.includes('..')) return s; // fichier sur le site (démo)
     return '';
   };
+  // Captures d'écran : l'image est gardée par Discord, la carte ne garde que la référence du message.
+  // Ces références viennent du serveur (opts.shots), jamais de la page.
+  const MAX_SHOTS = 4;
+  const DID = /^\d{5,25}$/;
+  function cleanShots(list) {
+    return (Array.isArray(list) ? list : []).slice(0, MAX_SHOTS).map(x => {
+      x = x || {};
+      if (DID.test(x.m) && DID.test(x.a) && DID.test(x.ch)) return { w: DID.test(x.w) ? x.w : '', ch: x.ch, m: x.m, a: x.a, n: str(x.n, 80) };
+      if (/^data:image\/(jpeg|png|webp);base64,[\w+/=]+$/.test(String(x.u || '')) && String(x.u).length < 900000) return { u: x.u };   // démo (cet appareil)
+      return null;
+    }).filter(Boolean);
+  }
+  const shotsText = n => (n > 1 ? `Sent ${n} screenshots.` : 'Sent a screenshot.');
   const newId = () => 'c_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   function fail(status, message) { const e = new Error(message); e.status = status; throw e; }
   const roleOf = r => (ROLES.includes(r) ? r : 'client');
@@ -93,9 +106,12 @@
     const a = action || {};
     const get = id => cards.find(c => c.id === id) || fail(404, 'This card no longer exists. It may have been deleted.');
     const stamp = o => (name ? Object.assign(o, { name }) : o);
-    const say = (c, text, system) => {
+    const shots = cleanShots(opts.shots);
+    const say = (c, text, system, pics) => {
       c.feedback = Array.isArray(c.feedback) ? c.feedback : [];
-      c.feedback.push(stamp(system ? { by, text, ts: now, system: true } : { by, text, ts: now }));
+      const m = stamp(system ? { by, text, ts: now, system: true } : { by, text, ts: now });
+      if (pics && pics.length) m.shots = pics;
+      c.feedback.push(m);
       if (c.feedback.length > MAX_MESSAGES) c.feedback.splice(0, c.feedback.length - MAX_MESSAGES);
     };
     const place = (c, col, index) => {
@@ -117,10 +133,10 @@
         const c = stamp({ id: newId(), col, title, by, platforms: cleanPlatforms(d.platforms, opts.platforms), createdAt: now, feedback: [] });
         const cat = str(d.cat, 24); if (cat) c.cat = cat;
         const note = str(d.note, 4000);
-        if (col === 'inspo') { c.link = link(d.link); c.note = note; }
+        if (col === 'inspo') { c.link = link(d.link); c.note = note; if (shots.length) c.shots = shots; }
         else {
           Object.assign(c, { video: link(d.video || d.link), version: 1, hook: str(d.hook, 200), caption: str(d.caption, 2200), tags: str(d.tags, 500), notes: [] });
-          if (note) { c.notes.unshift(stamp({ text: note, ts: now })); say(c, note); }
+          if (note || shots.length) { const t = note || shotsText(shots.length); c.notes.unshift(stamp({ text: t, ts: now })); say(c, t, false, shots); }
           if (col === 'review') c.status = 'awaiting';
           if (col === 'ready') { c.master = link(d.master) || c.video; c.approvedAt = now; c.status = 'approved'; }
         }
@@ -134,15 +150,15 @@
         const c = get(a.id);
         const text = str(a.text, 4000);
         const cut = canUploadCut(c, role) ? link(a.cut) : '';
-        if (!text && !cut) fail(400, 'Write a message first.');
+        if (!text && !cut && !shots.length) fail(400, 'Write a message first.');
         const firstVideo = !!cut && !c.video;
         if (cut) {
           c.version = firstVideo ? (c.version || 1) : (c.version || 1) + 1;   // 1er lien = V1, les suivants = V2, V3…
           c.video = cut;
           if (c.col === 'ready') c.master = cut; else c.status = 'awaiting';
         }
-        const msg = text || (firstVideo ? 'Video uploaded.' : `V${c.version} uploaded.`);
-        say(c, msg);
+        const msg = text || (cut ? (firstVideo ? 'Video uploaded.' : `V${c.version} uploaded.`) : shotsText(shots.length));
+        say(c, msg, false, shots);
         if (by === 'editor' && c.col !== 'inspo') {
           c.notes = Array.isArray(c.notes) ? c.notes : [];
           c.notes.unshift(stamp({ text: msg, ts: now }));
@@ -219,5 +235,5 @@
     }
   }
 
-  return { COLS, PLATS, ROLES, apply, canMove, canDelete, canAddTo, canUploadCut, cleanPlatforms };
+  return { COLS, PLATS, ROLES, MAX_SHOTS, cleanShots, apply, canMove, canDelete, canAddTo, canUploadCut, cleanPlatforms };
 });

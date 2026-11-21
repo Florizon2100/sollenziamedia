@@ -21,6 +21,14 @@
      POST /api/workflow-admin/editors      → { name, clients: [ids] | 'all' } crée un monteur
      POST /api/workflow-admin/editors/:id  → { name?, clients?, regenerate?, delete? }
 
+   Captures d'écran (dans un message, une demande de changements ou une nouvelle idée)
+     POST /api/workflow/:key/action  avec  shots: [{ data: "<base64 jpeg/png/webp>" }]   (4 max, réduites par la page)
+       → l'image est postée sur Discord (webhook du client, sinon celui par défaut) avec le message,
+         la carte ne garde que la référence du message Discord. Rien n'est écrit sur le volume.
+     GET  /api/workflow-shot/:clientId/:channel/:message/:attachment/:sig
+       → redirige vers l'image sur Discord. Les liens Discord expirent (~24 h) : on en redemande un frais,
+         au webhook qui l'a postée (ou au bot si le webhook a changé). Le message reste dans le salon pour toujours.
+
    Rôles (décidés ici, jamais par la page)
      x-api-key = API_SECRET              → owner  (toi)
      x-editor-token valide + client lié  → editor (monteur)
@@ -128,6 +136,49 @@ function mountWorkflow(app, { dataDir, secret }) {
   }
   const saveBoard = (client, board) => writeJSON(fileFor(client), board);
   const publicClient = c => ({ name: c.name, mode: c.mode, platforms: c.platforms, enabled: c.enabled });
+  /* ───────── captures d'écran ───────── */
+  const SHOT_KEY_FILE = path.join(dir, '_shots.key');
+  let shotKeyCache = null;
+  function shotKey() {
+    if (shotKeyCache) return shotKeyCache;
+    let k = process.env.SHOT_SECRET || (fs.existsSync(SHOT_KEY_FILE) ? fs.readFileSync(SHOT_KEY_FILE, 'utf8').trim() : '');
+    if (!k) { k = crypto.randomBytes(32).toString('hex'); fs.writeFileSync(SHOT_KEY_FILE, k); }
+    return (shotKeyCache = k);
+  }
+  const shotSig = (cid, s) => crypto.createHmac('sha256', shotKey()).update(`${cid}.${s.ch}.${s.m}.${s.a}`).digest('base64url').slice(0, 24);
+  const shotPath = (client, s) => `/api/workflow-shot/${encodeURIComponent(client.rawId)}/${s.ch}/${s.m}/${s.a}/${shotSig(client.rawId, s)}`;
+  // Ajoute le lien d'affichage (p) aux captures, seulement dans la réponse (jamais dans le fichier)
+  function withShotLinks(client, cards) {
+    const add = list => list.map(s => (s && s.m ? { n: s.n, p: shotPath(client, s) } : s));
+    return cards.map(c => {
+      if (!c.shots && !(c.feedback || []).some(f => f.shots)) return c;
+      const x = { ...c };
+      if (Array.isArray(c.shots)) x.shots = add(c.shots);
+      if (Array.isArray(c.feedback)) x.feedback = c.feedback.map(f => (f.shots ? { ...f, shots: add(f.shots) } : f));
+      return x;
+    });
+  }
+  const MAGIC = [
+    { mime: 'image/jpeg', ext: 'jpg', ok: b => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff },
+    { mime: 'image/png', ext: 'png', ok: b => b.slice(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) },
+    { mime: 'image/webp', ext: 'webp', ok: b => b.slice(0, 4).toString() === 'RIFF' && b.slice(8, 12).toString() === 'WEBP' },
+  ];
+  const MAX_SHOT_BYTES = 4 * 1024 * 1024;
+  // Lit les images envoyées par la page. Erreur claire si quelque chose ne va pas.
+  function readShots(list) {
+    if (list == null) return [];
+    if (!Array.isArray(list)) throw Object.assign(new Error('Screenshots were sent in a wrong format.'), { status: 400 });
+    if (list.length > core.MAX_SHOTS) throw Object.assign(new Error(`${core.MAX_SHOTS} screenshots max per message.`), { status: 400 });
+    return list.map((x, i) => {
+      const b64 = String((x && x.data) || '').replace(/^data:[\w/+.-]+;base64,/, '');
+      if (!/^[A-Za-z0-9+/=\s]+$/.test(b64)) throw Object.assign(new Error('A screenshot could not be read. Try another image.'), { status: 400 });
+      const buf = Buffer.from(b64, 'base64');
+      if (!buf.length || buf.length > MAX_SHOT_BYTES) throw Object.assign(new Error('A screenshot is too large (4 MB max).'), { status: 400 });
+      const t = MAGIC.find(m => m.ok(buf));
+      if (!t) throw Object.assign(new Error('Only images (JPG, PNG, WEBP) can be sent.'), { status: 400 });
+      return { buf, mime: t.mime, name: `screenshot-${i + 1}.${t.ext}` };
+    });
+  }
   const counts = cards => core.COLS.reduce((o, col) => (o[col] = cards.filter(c => c.col === col).length, o), {});
 
   /* ═════════ Tableau ═════════ */
@@ -137,18 +188,48 @@ function mountWorkflow(app, { dataDir, secret }) {
     const board = loadBoard(r.client);
     res.set('Cache-Control', 'no-store');
     const v = vapid();
-    res.json({ client: publicClient(r.client), role: r.role, me: r.name || null, features: { push: v ? v.publicKey : null }, board: { cards: board.cards, rev: board.rev || 0 } });
+    const hook = r.client.webhook || process.env.WORKFLOW_DISCORD_WEBHOOK;
+    res.json({ client: publicClient(r.client), role: r.role, me: r.name || null, features: { push: v ? v.publicKey : null, shots: !!hook }, board: { cards: withShotLinks(r.client, board.cards), rev: board.rev || 0 } });
   });
 
-  app.post('/api/workflow/:key/action', (req, res) => {
+  app.post('/api/workflow/:key/action', async (req, res) => {
     const r = resolve(req);
     if (r.error) return res.status(r.error[0]).json({ error: r.error[1] });
     const { client, role } = r;
     if (!client.enabled && role === 'client') return res.status(403).json({ error: 'The workflow board is not enabled for this client.' });
+    const action = { ...(req.body || {}) };
+    const now = Date.now();
+    const opts = { platforms: client.platforms, name: r.name, now };
+
+    // Captures : d'abord sur Discord (c'est Discord qui garde l'image), ensuite seulement on enregistre la carte
+    let files = [], sentWith = null;
+    try { files = readShots(action.shots); } catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+    delete action.shots;
+    if (files.length) {
+      if (!['comment', 'add'].includes(action.type)) return res.status(400).json({ error: 'Screenshots can only be added to a message or a new idea.' });
+      const hook = client.webhook || process.env.WORKFLOW_DISCORD_WEBHOOK;
+      if (!hook) return res.status(400).json({ error: 'Screenshots are not set up for this board yet. Ask Sollenzia to connect Discord.' });
+      let dry;
+      try { dry = core.apply(JSON.parse(JSON.stringify(loadBoard(client))), action, role, { ...opts, shots: files.map(() => ({ ch: '10000', m: '10000', a: '10000' })) }); }
+      catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+      const ev = dry.events.find(x => ['idea', 'revision', 'comment'].includes(x.kind)) || {};
+      const card = dry.board.cards.find(c => c.id === (ev.cardId || (dry.card && dry.card.id))) || dry.card;
+      const kind = role === 'client' && KINDS[ev.kind] && ev.kind !== 'test' ? ev.kind : 'shot';
+      const text = ev.text || (action.type === 'comment' ? action.text : (action.card || {}).note) || '';
+      const sent = await postFiles(hook, { username: 'Sollenzia Workflow', embeds: [embedFor(kind, client, card, text, role === 'client' ? client.name : r.name)], allowed_mentions: { parse: [] } }, files);
+      if (!sent.ok) { console.error('[WORKFLOW] screenshot → Discord:', sent.error); return res.status(502).json({ error: 'The screenshot could not be sent to Discord. Try again in a moment.' }); }
+      const msg = sent.message || {};
+      const wid = (hook.match(/\/webhooks\/(\d+)\//) || [])[1] || '';
+      opts.shots = (msg.attachments || []).map(a => ({ w: wid, ch: String(msg.channel_id), m: String(msg.id), a: String(a.id), n: a.filename }));
+      if (!opts.shots.length) return res.status(502).json({ error: 'Discord did not keep the screenshot. Try again.' });
+      for (const s of opts.shots) urlCache.set(`${s.m}.${s.a}`, cacheEntry((msg.attachments || []).find(a => String(a.id) === s.a).url));
+      sentWith = ev.kind || null;
+    }
+
     const board = loadBoard(client);
     let result;
     try {
-      result = core.apply(board, req.body || {}, role, { platforms: client.platforms, name: r.name });
+      result = core.apply(board, action, role, opts);
     } catch (e) {
       return res.status(e.status || 400).json({ error: e.message });
     }
@@ -157,13 +238,14 @@ function mountWorkflow(app, { dataDir, secret }) {
     try { saveBoard(client, board); }
     catch (e) { console.error('[WORKFLOW] save failed:', e.message); return res.status(500).json({ error: 'Could not save, try again.' }); }
 
-    res.json({ ok: true, role, board: { cards: board.cards, rev: board.rev } });
+    res.json({ ok: true, role, board: { cards: withShotLinks(client, board.cards), rev: board.rev } });
 
     // Discord : uniquement ce que fait le CLIENT (jamais toi ni tes monteurs)
     // Téléphone du client : quand l'ÉQUIPE met une vidéo en review
     for (const ev of result.events) {
       const card = board.cards.find(c => c.id === ev.cardId) || result.card;
       if (role === 'client') {
+        if (sentWith && ev.kind === sentWith) { sentWith = null; continue; }   // déjà envoyé avec les captures
         notify(ev.kind, client, card, ev.text).then(x => { if (x && !x.ok && !x.skipped) console.error('[WORKFLOW] Discord:', x.error); });
       } else if (ev.kind === 'cut' && card && card.col === 'review') {
         pushToClient(client, {
@@ -319,6 +401,96 @@ function mountWorkflow(app, { dataDir, secret }) {
     res.json({ editor: publicEditor(e) });
   });
 
+  /* ═════════ Captures : afficher l'image gardée par Discord ═════════ */
+  const urlCache = new Map();   // "message.attachment" → { url, until }   (en mémoire seulement)
+  function cacheEntry(url) {
+    let until = Date.now() + 6 * 3600e3;
+    try { const ex = parseInt(new URL(url).searchParams.get('ex'), 16); if (ex) until = ex * 1000 - 15 * 60e3; } catch {}
+    if (urlCache.size > 2000) urlCache.delete(urlCache.keys().next().value);
+    return { url, until };
+  }
+  async function freshShotUrl(client, s) {
+    const hit = urlCache.get(`${s.m}.${s.a}`);
+    if (hit && hit.until > Date.now()) return hit.url;
+    const pick = m => { const a = m && (m.attachments || []).find(x => String(x.id) === s.a); return a && a.url; };
+    let url = null;
+    // 1) le webhook qui l'a postée (pas besoin de droits pour le bot)
+    for (const h of [client.webhook, process.env.WORKFLOW_DISCORD_WEBHOOK]) {
+      if (url || !h || !s.w || !h.includes(`/webhooks/${s.w}/`)) continue;
+      const g = await getJSON(`${h.replace(/\/+$/, '')}/messages/${s.m}`);
+      url = g.ok ? pick(g.data) : null;
+    }
+    // 2) le bot (si le webhook du client a changé depuis)
+    if (!url && process.env.DISCORD_TOKEN) {
+      const g = await getJSON(`https://discord.com/api/v10/channels/${s.ch}/messages/${s.m}`, { Authorization: `Bot ${process.env.DISCORD_TOKEN}` });
+      url = g.ok ? pick(g.data) : null;
+    }
+    if (url) urlCache.set(`${s.m}.${s.a}`, cacheEntry(url));
+    return url;
+  }
+  app.get('/api/workflow-shot/:cid/:ch/:m/:a/:sig', async (req, res) => {
+    const { cid, ch, m, a, sig } = req.params;
+    if (![ch, m, a].every(x => /^\d{5,25}$/.test(x))) return res.status(404).end();
+    const client = clientById(cid);
+    const good = client && shotSig(client.rawId, { ch, m, a });
+    if (!good || good.length !== String(sig).length || !crypto.timingSafeEqual(Buffer.from(good), Buffer.from(String(sig)))) return res.status(404).end();
+    let s = null;
+    for (const c of loadBoard(client).cards) {
+      for (const x of [...(c.shots || []), ...(c.feedback || []).flatMap(f => f.shots || [])]) if (x && x.m === m && x.a === a) { s = x; break; }
+      if (s) break;
+    }
+    if (!s) return res.status(404).type('text').send('This screenshot was removed.');
+    const url = await freshShotUrl(client, s);
+    if (!url) return res.status(404).type('text').send('Discord no longer has this screenshot (message deleted?).');
+    res.set('Cache-Control', 'private, max-age=1800');
+    res.redirect(302, url);
+  });
+
+  function getJSON(url, headers = {}) {
+    return new Promise(resolve => {
+      try {
+        const req = (url.startsWith('http:') ? http : https).get(url, { headers: { 'User-Agent': 'SollenziaWorkflow (sollenzia.com, 1.0)', ...headers } }, res => {
+          let d = ''; res.on('data', c => { d += c; });
+          res.on('end', () => { let j = null; try { j = JSON.parse(d); } catch {} resolve(res.statusCode < 300 && j ? { ok: true, data: j } : { ok: false, status: res.statusCode }); });
+        });
+        req.on('error', () => resolve({ ok: false }));
+        req.setTimeout(8000, () => req.destroy(new Error('timeout')));
+      } catch { resolve({ ok: false }); }
+    });
+  }
+  // Message Discord avec fichiers joints (multipart). ?wait=true → Discord renvoie le message (avec les pièces jointes).
+  function postFiles(url, payload, files) {
+    return new Promise(resolve => {
+      try {
+        const u = new URL(url);
+        u.searchParams.set('wait', 'true');
+        const boundary = '----sollenzia' + crypto.randomBytes(8).toString('hex');
+        payload = { ...payload, attachments: files.map((f, i) => ({ id: i, filename: f.name })) };
+        const parts = [Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(payload)}\r\n`)];
+        files.forEach((f, i) => {
+          parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="files[${i}]"; filename="${f.name}"\r\nContent-Type: ${f.mime}\r\n\r\n`), f.buf, Buffer.from('\r\n'));
+        });
+        parts.push(Buffer.from(`--${boundary}--\r\n`));
+        const body = Buffer.concat(parts);
+        const lib = u.protocol === 'http:' ? http : https;
+        const req = lib.request({
+          hostname: u.hostname, port: u.port || undefined, path: u.pathname + u.search, method: 'POST',
+          headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}`, 'Content-Length': body.length },
+        }, res => {
+          let d = '';
+          res.on('data', c => { d += c; });
+          res.on('end', () => {
+            if (res.statusCode >= 300) return resolve({ ok: false, error: `Discord answered ${res.statusCode} ${d.slice(0, 200)}`.trim() });
+            try { resolve({ ok: true, message: JSON.parse(d) }); } catch { resolve({ ok: false, error: 'Discord sent an unreadable answer' }); }
+          });
+        });
+        req.on('error', e => resolve({ ok: false, error: e.message }));
+        req.setTimeout(20000, () => req.destroy(new Error('Discord did not answer in 20s')));
+        req.end(body);
+      } catch (e) { resolve({ ok: false, error: e.message }); }
+    });
+  }
+
   /* ═════════ Discord ═════════ */
   // Seules ces actions du client envoient un message (approbation, "posté", commentaires sur une idée : rien)
   const KINDS = {
@@ -326,6 +498,8 @@ function mountWorkflow(app, { dataDir, secret }) {
     revision:     { title: '💬 New review',          color: 0x6c4ec1 },
     idea_deleted: { title: '🗑️ Idea deleted',        color: 0xe64343 },
     test:         { title: '✅ Discord is connected', color: 0x16823b },
+    comment:      null,                                                    // commentaire sur une idée : pas de message… sauf avec une capture
+    shot:         { title: '📎 Screenshot',          color: 0x7c3aed },
   };
   const NAMES = { instagram: 'Instagram', tiktok: 'TikTok', youtube: 'YouTube', facebook: 'Facebook' };
   const cut = (s, n) => { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
@@ -333,11 +507,15 @@ function mountWorkflow(app, { dataDir, secret }) {
   function notify(kind, client, card, text) {
     const url = client.webhook || process.env.WORKFLOW_DISCORD_WEBHOOK;   // webhook du client, sinon celui par défaut
     const k = KINDS[kind];
-    if (!k) return Promise.resolve({ ok: true, skipped: true });
+    if (!k || kind === 'shot') return Promise.resolve({ ok: true, skipped: true });
     if (!url) return Promise.resolve({ ok: false, skipped: true });
+    return postJSON(url, { username: 'Sollenzia Workflow', embeds: [embedFor(kind, client, card, text, client.name)], allowed_mentions: { parse: [] } });
+  }
+  function embedFor(kind, client, card, text, by) {
+    const k = KINDS[kind] || KINDS.shot;
     const fields = [
       { name: 'Client', value: cut(client.name, 100), inline: true },
-      { name: 'By', value: cut(client.name, 100), inline: true },
+      { name: 'By', value: cut(by || client.name, 100), inline: true },
     ];
     if (card) {
       fields.push({ name: 'Platforms', value: core.cleanPlatforms(card.platforms, client.platforms).map(p => NAMES[p]).join(', '), inline: true });
@@ -355,7 +533,7 @@ function mountWorkflow(app, { dataDir, secret }) {
     };
     const desc = text || (card && (card.col === 'inspo' ? card.note : ((card.notes || [])[0] || {}).text));
     if (desc) embed.description = cut(desc, 2000);
-    return postJSON(url, { username: 'Sollenzia Workflow', embeds: [embed], allowed_mentions: { parse: [] } });
+    return embed;
   }
 
   function postJSON(url, payload) {

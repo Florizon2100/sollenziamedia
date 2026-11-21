@@ -17,7 +17,9 @@ function startAPI() {
 
   app.use(cors({ origin: '*', methods: ['GET','POST','OPTIONS'], allowedHeaders: ['x-api-key','x-editor-token','Content-Type'] }));
   app.options('*', cors());
-  app.use(express.json({ limit: '2mb' }));
+  // Les messages du workflow peuvent porter des captures d'écran (4 max, réduites par la page) → 12 Mo sur cette route seulement
+  const jsonSmall = express.json({ limit: '2mb' }), jsonShots = express.json({ limit: '12mb' });
+  app.use((req, res, next) => (/^\/api\/workflow\/[^/]+\/action$/.test(req.path) ? jsonShots : jsonSmall)(req, res, next));
   let admin2 = null;
 
   function auth(req, res, next) {
