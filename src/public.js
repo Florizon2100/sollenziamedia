@@ -15,7 +15,7 @@ function mountPublic(app, { dataDir }) {
   const hits = new Map();
   setInterval(() => hits.clear(), 60 * 1000).unref();
   const limit = (req, res, next) => {
-    const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+    const ip = String(req.ip || req.socket.remoteAddress || '');
     const n = (hits.get(ip) || 0) + 1; hits.set(ip, n);
     if (n > 120) return res.status(429).json({ error: 'Too many requests' });
     next();
@@ -30,13 +30,14 @@ function mountPublic(app, { dataDir }) {
       // mêmes liens qu'avant : clé du client (majuscules ignorées) ou nom du client (?c=Dmo, ?c=silva-twins)
       const k = key.toLowerCase();
       const list = cfg.clients || [];
-      const c = list.find(c => c.clientSecret && c.clientSecret === key)
-        || list.find(c => c.clientSecret && c.clientSecret.toLowerCase() === k)
-        || list.find(c => slug(c.name) === k || String(c.name || '').toLowerCase() === k);
+      const bySecret = list.find(c => c.clientSecret && c.clientSecret === key)
+        || list.find(c => c.clientSecret && c.clientSecret.toLowerCase() === k);
+      // lien par nom (?c=silva-twins) : stats seulement, et la clé secrète du client n'est JAMAIS renvoyée
+      const c = bySecret || list.find(c => slug(c.name) === k || String(c.name || '').toLowerCase() === k);
       if (!key || !c) return res.status(404).json({ error: 'unknown_client' });
 
       const chIds = new Set((c.channels || []).map(ch => String(ch.id)));
-      const client = { id: c.id, name: c.name, clientSecret: c.clientSecret || '', channels: (c.channels || []).map(ch => ({ id: ch.id, name: ch.name })) };
+      const client = { id: c.id, name: c.name, clientSecret: bySecret ? (c.clientSecret || '') : '', channels: (c.channels || []).map(ch => ({ id: ch.id, name: ch.name })) };
       const s = (cfg.clientSettings || {})[c.id] || {};
       const settings = {}; for (const k of SAFE_SETTINGS) if (k in s) settings[k] = s[k];
       const own = list => (Array.isArray(list) ? list : []).filter(x => String(x.clientId) === String(c.id));
@@ -73,7 +74,7 @@ function mountPublic(app, { dataDir }) {
         posts, known_users, viewsTracking: viewsTracker ? viewsTracker.summary() : null,
         clippers, clickTracking,
       });
-    } catch (e) { res.status(500).json({ error: e.message }); }
+    } catch (e) { console.error('[PUBLIC]', e.message); res.status(500).json({ error: 'server_error' }); }
   });
 }
 

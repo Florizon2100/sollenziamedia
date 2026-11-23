@@ -45,7 +45,7 @@ function mountAdmin2(app, { dataDir, secret }) {
   const DAILY_DIR = path.join(dataDir, 'backups', 'daily');
 
   const auth = (req, res, next) => {
-    if (!secret || req.headers['x-api-key'] !== secret) return res.status(401).json({ error: 'Unauthorized' });
+    if (!secret || !require('./security').safeEqual(req.headers['x-api-key'], secret)) return res.status(401).json({ error: 'Unauthorized' });
     next();
   };
   const readJSON = (f, fb) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return fb; } };

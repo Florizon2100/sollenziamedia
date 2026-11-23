@@ -5,6 +5,7 @@ const path    = require('path');
 const { getAllClippers, assignClient, upsertClipper, removeClipper } = require('./clippers');
 const { clicksFor, hasKey: clicksEnabled } = require('./clickmagick');
 const viewsTracker = require('./views-tracker');
+const { ownerSecret, safeEqual, harden } = require('./security');
 
 const dataDir = process.env.RAILWAY_VOLUME_MOUNT_PATH
   ? process.env.RAILWAY_VOLUME_MOUNT_PATH
@@ -13,7 +14,9 @@ const dataDir = process.env.RAILWAY_VOLUME_MOUNT_PATH
 function startAPI() {
   const app    = express();
   const PORT   = process.env.PORT || process.env.API_PORT || 3000;
-  const SECRET = process.env.API_SECRET || 'changeme';
+  const SECRET = ownerSecret();
+
+  harden(app);
 
   app.use(cors({ origin: '*', methods: ['GET','POST','OPTIONS'], allowedHeaders: ['x-api-key','x-editor-token','Content-Type'] }));
   app.options('*', cors());
@@ -23,8 +26,8 @@ function startAPI() {
   let admin2 = null;
 
   function auth(req, res, next) {
-    const key = req.headers['x-api-key'] || req.query.key;
-    if (key !== SECRET) return res.status(401).json({ error: 'Unauthorized' });
+    const key = req.headers['x-api-key'];
+    if (!safeEqual(key, SECRET)) return res.status(401).json({ error: 'Unauthorized' });
     next();
   }
 
@@ -191,6 +194,10 @@ function startAPI() {
   // Sauvegarde complète du volume (lecture seule) : GET /api/backup
   try { require('./backup').mountBackup(app, { dataDir, secret: SECRET }); }
   catch (e) { console.error('[BACKUP] Failed to load:', e.message); }
+
+  // Formulaire Apply / waitlist du site → Discord (webhook secret côté Railway)
+  try { require('./apply').mountApply(app); }
+  catch (e) { console.error('[APPLY] Failed to load:', e.message); }
 
   // Tableau workflow client (idées → review → prêt à poster)
   try { require('./workflow').mountWorkflow(app, { dataDir, secret: SECRET }); }

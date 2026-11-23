@@ -108,7 +108,7 @@ function mountWorkflow(app, { dataDir, secret }) {
     return loadEditors().editors.find(e => e.active !== false && sameToken(e.token, token)) || null;
   }
   const editorHasClient = (ed, client) => ed && (ed.clients === 'all' || (Array.isArray(ed.clients) && ed.clients.map(String).includes(client.rawId)));
-  const isOwner = req => !!secret && req.headers['x-api-key'] === secret;
+  const isOwner = req => !!secret && require('./security').safeEqual(req.headers['x-api-key'], secret);
 
   /* Qui fait la requête, et sur quel client ? */
   function resolve(req) {

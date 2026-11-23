@@ -53,8 +53,12 @@ function getDaysInMonth(year, month) {
   return days;
 }
 
+// Lien vidéo : seulement http(s), sans espaces ni caractères HTML (" ' < > `), 500 caractères max.
+// Empêche un lien piégé (javascript:, code HTML) de s'exécuter dans les pages admin du site.
 function isValidUrl(url) {
-  try { new URL(url); return true; } catch { return false; }
+  const s = String(url || '').trim();
+  if (!s || s.length > 500 || /[\s"'<>`\\]/.test(s)) return false;
+  try { const u = new URL(s); return u.protocol === 'https:' || u.protocol === 'http:'; } catch { return false; }
 }
 
 function requireAdmin(interaction) {

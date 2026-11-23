@@ -13,7 +13,7 @@ const MAX_TOTAL = 300 * 1024 * 1024; // sécurité : 300 Mo max
 
 function mountBackup(app, { dataDir, secret }) {
   app.get('/api/backup', (req, res) => {
-    if (!secret || req.headers['x-api-key'] !== secret) return res.status(401).json({ error: 'Unauthorized' });
+    if (!secret || !require('./security').safeEqual(req.headers['x-api-key'], secret)) return res.status(401).json({ error: 'Unauthorized' });
     const files = {};
     let total = 0, count = 0, skipped = [];
 
