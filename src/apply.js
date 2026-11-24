@@ -48,7 +48,8 @@ function mountApply(app) {
 
       const waitlist = message.startsWith('[WAITLIST]'), learn = message.startsWith('[LEARN]');
       const title = waitlist ? '📝 New waitlist signup (Sollenzia Learn)' : learn ? '📚 New "learn" request' : '📬 New Application Received';
-      const admin = String(process.env.ADMIN_USER_ID || '').replace(/\D/g, '');
+      // premier identifiant Discord valide de ADMIN_USER_ID (la variable peut en contenir plusieurs)
+      const admin = (String(process.env.ADMIN_USER_ID || '').match(/\d{17,20}/) || [''])[0];
 
       const fields = [
         { name: '👤 Name', value: name || '-', inline: true },
@@ -56,7 +57,7 @@ function mountApply(app) {
       ];
       if (!waitlist) {
         fields.push({ name: '📱 Phone', value: phone || '-', inline: false });
-        fields.push({ name: '💬 Message', value: message.replace(/^\[(LEARN)\]\s*/, '') || '-', inline: false });
+        fields.push({ name: '💬 Message', value: message.replace(/^\[(LEARN)\]\s*/, '').slice(0, 1000) || '-', inline: false });
       }
       if (page) fields.push({ name: '🌐 Page', value: page, inline: true });
 
@@ -67,8 +68,20 @@ function mountApply(app) {
         embeds: [{ title, color: waitlist ? 0x8e79cf : 0x00A3FF, fields, footer: { text: `Submitted on ${new Date().toLocaleString('fr-FR', { timeZone: 'Europe/Paris' })}` } }],
       };
 
-      const r = await fetch(hook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-      if (!r.ok) { console.error('[APPLY] Discord a répondu', r.status); return res.status(502).json({ error: 'send_failed' }); }
+      const send = body => fetch(hook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      let r = await send(payload);
+      if (!r.ok) {
+        const why = (await r.text().catch(() => '')).slice(0, 300);
+        console.error('[APPLY] Discord a répondu', r.status, why);
+        // envoi de secours : message texte simple, sans mention ni embed
+        const plain = [title, `Name: ${name}`, `Email: ${email}`, waitlist ? '' : `Phone: ${phone || '-'}`, waitlist ? '' : `Message: ${message.slice(0, 1200) || '-'}`, page ? `Page: ${page}` : '']
+          .filter(Boolean).join('\n').slice(0, 1900);
+        const fallback = { content: plain, allowed_mentions: { parse: [] } };
+        // salon "forum" Discord : il faut un titre de fil
+        if (/thread_name/i.test(why)) { fallback.thread_name = `${waitlist ? 'Waitlist' : 'Application'} - ${name}`.slice(0, 90); payload.thread_name = fallback.thread_name; r = await send(payload); if (r.ok) return res.json({ ok: true }); }
+        r = await send(fallback);
+        if (!r.ok) { console.error('[APPLY] Envoi de secours refusé', r.status, (await r.text().catch(() => '')).slice(0, 300)); return res.status(502).json({ error: 'send_failed' }); }
+      }
       res.json({ ok: true });
     } catch (e) {
       console.error('[APPLY]', e.message);
