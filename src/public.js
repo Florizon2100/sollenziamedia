@@ -22,7 +22,21 @@ function mountPublic(app, { dataDir }) {
   };
   const readJSON = (f, fb) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return fb; } };
 
-  app.get('/api/public/:key', limit, (req, res) => {
+  // Anti force brute sur les clés clients : 20 clés inconnues en 15 min depuis une IP → blocage 15 min
+  const misses = new Map();
+  setInterval(() => { const now = Date.now(); for (const [ip, m] of misses) if (m.until < now) misses.delete(ip); }, 60 * 1000).unref();
+  const guard = (req, res, next) => {
+    const ip = String(req.ip || req.socket.remoteAddress || ''), m = misses.get(ip);
+    if (m && m.n >= 20 && m.until > Date.now()) return res.status(429).json({ error: 'Too many attempts. Try again later.' });
+    res.on('finish', () => {
+      if (res.statusCode !== 404) return;
+      const cur = misses.get(ip), n = cur && cur.until > Date.now() ? cur.n + 1 : 1;
+      misses.set(ip, { n, until: Date.now() + 15 * 60 * 1000 });
+    });
+    next();
+  };
+
+  app.get('/api/public/:key', limit, guard, (req, res) => {
     try {
       const key = String(req.params.key || '').trim();
       const cfg = readJSON(path.join(dataDir, 'admin-config.json'), {}) || {};
