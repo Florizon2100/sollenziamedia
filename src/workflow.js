@@ -88,9 +88,12 @@ function mountWorkflow(app, { dataDir, secret }) {
     key = String(key || '').trim();
     if (!key) return null;
     const cfg = readConfig();
-    const c = (cfg.clients || []).find(c =>
-      (c.clientSecret && c.clientSecret === key) ||
-      (!c.clientSecret && (c.name || '').toLowerCase().replace(/\s+/g, '-') === key.toLowerCase()));
+    const k = key.toLowerCase();
+    // clé exacte, puis clé sans tenir compte des majuscules (comme le dashboard),
+    // puis le nom — uniquement pour un client qui n'a pas de clé
+    const c = (cfg.clients || []).find(c => c.clientSecret && c.clientSecret === key)
+      || (cfg.clients || []).find(c => c.clientSecret && c.clientSecret.toLowerCase() === k)
+      || (cfg.clients || []).find(c => !c.clientSecret && (c.name || '').toLowerCase().replace(/\s+/g, '-') === k);
     return c ? clientInfo(cfg, c) : null;
   }
   function clientById(id) {
