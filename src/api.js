@@ -196,6 +196,10 @@ function startAPI() {
   catch (e) { console.error('[BACKUP] Failed to load:', e.message); }
 
   // Formulaire Apply / waitlist du site → Discord (webhook secret côté Railway)
+  // Espace client : identifiant + mot de passe par client (empreintes scrypt sur le volume)
+  try { require('./client-auth').mountClientAuth(app, auth, dataDir); }
+  catch (e) { console.error('[CLIENT-AUTH] Failed to load:', e.message); }
+
   try { require('./apply').mountApply(app); }
   catch (e) { console.error('[APPLY] Failed to load:', e.message); }
 
