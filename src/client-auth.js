@@ -20,7 +20,7 @@ const crypto = require('crypto');
 const { clientIp } = require('./security');
 
 const FAIL_MAX = 10, WINDOW = 15 * 60 * 1000;
-const SESSION_DAYS = 30;
+const SESSION_DAYS = 90;
 const DATA_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || path.join(__dirname, '..', 'data');
 const PW_FILE = path.join(DATA_DIR, 'client-passwords.json');
 const SESS_FILE = path.join(DATA_DIR, 'client-sessions.json');
@@ -91,7 +91,7 @@ function mountClientAuth(app, auth, dataDir) {
     if (!c) return res.status(403).json({ error: 'Your access is not ready yet. Contact Sollenzia.' });
     fails.delete(uk);
     const s = (readJSON(CFG, {}).clientSettings || {})[c.id] || {};
-    // la page reçoit un jeton de session (30 jours), jamais la clé du client
+    // la page reçoit un jeton de session (90 jours), jamais la clé du client
     res.json({ key: createSession(c.id), name: c.name, workflow: s.customWorkflow === true });
   });
 
