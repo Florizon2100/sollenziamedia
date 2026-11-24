@@ -173,7 +173,7 @@ function startAPI() {
 
   app.get('/api/debug/guild-config', auth, (req, res) => {
     try {
-      const guildId = req.query.guildId;
+      const guildId = String(req.query.guildId || '').replace(/\D/g, '');   // identifiant Discord = chiffres seulement
       if (!guildId) return res.status(400).json({ error: 'Missing ?guildId=' });
       const configPath = path.join(dataDir, `config-${guildId}.json`);
       if (!fs.existsSync(configPath)) return res.json({ exists: false, guildId });
