@@ -56,6 +56,8 @@ const isPushEndpoint = u => { try { const x = new URL(u); return x.protocol === 
 // Seuls les vrais webhooks Discord sont acceptés (jamais une autre adresse)
 const WEBHOOK_RE = /^https:\/\/(?:ptb\.|canary\.)?(?:discord|discordapp)\.com\/api\/webhooks\/\d+\/[\w-]+\/?$/;
 
+const clientAuth = require('./client-auth');
+
 function mountWorkflow(app, { dataDir, secret }) {
   const dir = path.join(dataDir, 'workflows');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -122,10 +124,14 @@ function mountWorkflow(app, { dataDir, secret }) {
       if (ed && editorHasClient(ed, client)) return { client, role: 'editor', name: ed.name };
       return { error: [403, 'This editor link has no access to this client. Ask Sollenzia.'] };
     }
-    const client = clientByKey(key);
+    // ?c=sz_… = session ouverte avec identifiant + mot de passe (Client panel)
+    const sessionId = clientAuth.sessionClientId(key);
+    const client = sessionId ? clientById(sessionId) : clientByKey(key);
     if (!client) return { error: [404, 'unknown_client'] };
     if (owner) return { client, role: 'owner', name: 'Sollenzia' };
     if (ed && editorHasClient(ed, client)) return { client, role: 'editor', name: ed.name };
+    // client protégé par mot de passe : sa clé / son nom ne suffisent plus, il faut se connecter
+    if (!sessionId && clientAuth.hasPassword(client.rawId)) return { error: [401, 'login_required'] };
     return { client, role: 'client' };
   }
 

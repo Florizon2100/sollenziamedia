@@ -8,6 +8,8 @@
 const fs   = require('fs');
 const path = require('path');
 
+const clientAuth = require('./client-auth');
+const { safeEqual } = require('./security');
 const SAFE_SETTINGS = ['showPosts', 'showMonthlyViews', 'showFollowers', 'totalFollowers', 'showLikes', 'totalLikes', 'totalPostsOverride', 'totalViewsOverride', 'customWorkflow', 'apifyViews', 'profileImage', 'avatar'];
 
 function mountPublic(app, { dataDir }) {
@@ -44,11 +46,16 @@ function mountPublic(app, { dataDir }) {
       // mêmes liens qu'avant : clé du client (majuscules ignorées) ou nom du client (?c=Dmo, ?c=silva-twins)
       const k = key.toLowerCase();
       const list = cfg.clients || [];
-      const bySecret = list.find(c => c.clientSecret && c.clientSecret === key)
-        || list.find(c => c.clientSecret && c.clientSecret.toLowerCase() === k);
+      // ?c=sz_… = session ouverte avec identifiant + mot de passe (Client panel)
+      const sessionId = clientAuth.sessionClientId(key);
+      const bySession = sessionId ? list.find(c => String(c.id) === sessionId) : null;
+      const bySecret = bySession ? null : (list.find(c => c.clientSecret && c.clientSecret === key)
+        || list.find(c => c.clientSecret && c.clientSecret.toLowerCase() === k));
       // lien par nom (?c=silva-twins) : stats seulement, et la clé secrète du client n'est JAMAIS renvoyée
-      const c = bySecret || list.find(c => slug(c.name) === k || String(c.name || '').toLowerCase() === k);
+      const c = bySession || bySecret || list.find(c => slug(c.name) === k || String(c.name || '').toLowerCase() === k);
       if (!key || !c) return res.status(404).json({ error: 'unknown_client' });
+      // client protégé par mot de passe : il faut passer par le Client panel
+      if (!bySession && clientAuth.hasPassword(c.id) && !safeEqual(req.headers['x-api-key'], process.env.API_SECRET)) return res.status(401).json({ error: 'login_required' });
 
       const chIds = new Set((c.channels || []).map(ch => String(ch.id)));
       const client = { id: c.id, name: c.name, clientSecret: bySecret ? (c.clientSecret || '') : '', channels: (c.channels || []).map(ch => ({ id: ch.id, name: ch.name })) };

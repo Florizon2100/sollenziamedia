@@ -20,6 +20,37 @@ const crypto = require('crypto');
 const { clientIp } = require('./security');
 
 const FAIL_MAX = 10, WINDOW = 15 * 60 * 1000;
+const SESSION_DAYS = 30;
+const DATA_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || path.join(__dirname, '..', 'data');
+const PW_FILE = path.join(DATA_DIR, 'client-passwords.json');
+const SESS_FILE = path.join(DATA_DIR, 'client-sessions.json');
+const readFile = (f, fb) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return fb; } };
+const writeFile = (f, data) => { const tmp = f + '.tmp'; fs.writeFileSync(tmp, JSON.stringify(data, null, 2)); fs.renameSync(tmp, f); };
+const sha = t => crypto.createHash('sha256').update(String(t)).digest('hex');
+
+/* ── utilisé par public.js et workflow.js ── */
+// Ce client est-il protégé par un mot de passe ? (alors ses anciens liens ?c=clé / ?c=nom ne marchent plus)
+function hasPassword(clientId) { return !!(readFile(PW_FILE, {}) || {})[String(clientId)]; }
+// Jeton de session (obtenu avec identifiant + mot de passe) → id du client, sinon null
+function sessionClientId(token) {
+  token = String(token || '');
+  if (!/^sz_[\w-]{30,}$/.test(token)) return null;
+  const s = (readFile(SESS_FILE, {}) || {})[sha(token)];
+  return s && s.exp > Date.now() ? String(s.clientId) : null;
+}
+function createSession(clientId) {
+  const token = 'sz_' + crypto.randomBytes(32).toString('base64url');
+  const all = readFile(SESS_FILE, {}) || {}, now = Date.now();
+  for (const [k, v] of Object.entries(all)) if (!v || v.exp < now) delete all[k];   // ménage
+  all[sha(token)] = { clientId: String(clientId), exp: now + SESSION_DAYS * 864e5 };
+  writeFile(SESS_FILE, all);
+  return token;
+}
+function revokeSessions(clientId) {
+  const all = readFile(SESS_FILE, {}) || {};
+  for (const [k, v] of Object.entries(all)) if (v && String(v.clientId) === String(clientId)) delete all[k];
+  writeFile(SESS_FILE, all);
+}
 const normUser = u => String(u || '').trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9._-]/g, '').slice(0, 40);
 
 function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
@@ -28,7 +59,7 @@ function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
 }
 
 function mountClientAuth(app, auth, dataDir) {
-  const FILE = path.join(dataDir, 'client-passwords.json');
+  const FILE = PW_FILE;
   const CFG = path.join(dataDir, 'admin-config.json');
   const readJSON = (f, fb) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return fb; } };
   const load = () => readJSON(FILE, {}) || {};
@@ -56,11 +87,18 @@ function mountClientAuth(app, auth, dataDir) {
     const ok = !!entry && password.length > 0 && crypto.timingSafeEqual(Buffer.from(test, 'hex'), Buffer.from(ref.hash, 'hex'));
     if (!ok) { fail(ip); if (user) fail(uk); return res.status(401).json({ error: 'Wrong username or password.' }); }
 
-    const c = clients().find(x => x.id === entry[0]);
-    if (!c || !c.clientSecret) return res.status(403).json({ error: 'Your access is not ready yet. Contact Sollenzia.' });
+    const c = clients().find(x => String(x.id) === String(entry[0]));
+    if (!c) return res.status(403).json({ error: 'Your access is not ready yet. Contact Sollenzia.' });
     fails.delete(uk);
     const s = (readJSON(CFG, {}).clientSettings || {})[c.id] || {};
-    res.json({ key: c.clientSecret, name: c.name, workflow: s.customWorkflow === true });
+    // la page reçoit un jeton de session (30 jours), jamais la clé du client
+    res.json({ key: createSession(c.id), name: c.name, workflow: s.customWorkflow === true });
+  });
+
+  app.post('/api/client-logout', (req, res) => {
+    const token = String((req.body && req.body.token) || '');
+    if (/^sz_[\w-]{30,}$/.test(token)) { const all = readFile(SESS_FILE, {}) || {}; delete all[sha(token)]; writeFile(SESS_FILE, all); }
+    res.json({ ok: true });
   });
 
   // ── gestion par l'owner (admin2.html) ──
@@ -72,13 +110,14 @@ function mountClientAuth(app, auth, dataDir) {
   app.post('/api/client-auth', auth, (req, res) => {
     const b = req.body || {};
     const clientId = String(b.clientId || ''), user = normUser(b.user), password = String(b.password || '');
-    if (!clients().some(c => c.id === clientId)) return res.status(404).json({ error: 'Client introuvable.' });
+    if (!clients().some(c => String(c.id) === clientId)) return res.status(404).json({ error: 'Client introuvable.' });
     if (user.length < 3) return res.status(400).json({ error: 'Identifiant trop court (3 caractères minimum).' });
     if (password.length < 10) return res.status(400).json({ error: 'Mot de passe trop court (10 caractères minimum).' });
     const all = load();
     if (Object.entries(all).some(([id, a]) => a.user === user && id !== clientId)) return res.status(409).json({ error: 'Cet identifiant est déjà pris par un autre client.' });
     all[clientId] = { user, ...hashPassword(password), updatedAt: new Date().toISOString() };
     store(all);
+    revokeSessions(clientId);   // nouveau mot de passe → les anciennes connexions sont coupées
     res.json({ ok: true, user });
   });
 
@@ -86,8 +125,9 @@ function mountClientAuth(app, auth, dataDir) {
     const all = load();
     delete all[String(req.params.clientId)];
     store(all);
+    revokeSessions(req.params.clientId);
     res.json({ ok: true });
   });
 }
 
-module.exports = { mountClientAuth };
+module.exports = { mountClientAuth, hasPassword, sessionClientId };
