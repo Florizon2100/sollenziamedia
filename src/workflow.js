@@ -198,7 +198,9 @@ function mountWorkflow(app, { dataDir, secret }) {
     res.set('Cache-Control', 'no-store');
     const v = vapid();
     const hook = r.client.webhook || process.env.WORKFLOW_DISCORD_WEBHOOK;
-    res.json({ client: publicClient(r.client), role: r.role, me: r.name || null, features: { push: v ? v.publicKey : null, shots: !!hook }, board: { cards: withShotLinks(r.client, board.cards), rev: board.rev || 0 } });
+    // message d'update : seulement pour un client CONNECTE qui a un mot de passe
+    const update = (r.role === 'client' && clientAuth.hasPassword(r.client.rawId)) ? (board.update || null) : null;
+    res.json({ client: publicClient(r.client), role: r.role, me: r.name || null, features: { push: v ? v.publicKey : null, shots: !!hook }, update, board: { cards: withShotLinks(r.client, board.cards), rev: board.rev || 0 } });
   });
 
   app.post('/api/workflow/:key/action', async (req, res) => {
@@ -355,6 +357,29 @@ function mountWorkflow(app, { dataDir, secret }) {
     const x = await notify('test', r.client, null, `Notifications for ${r.client.name}'s board will arrive here.`);
     if (x.skipped) return res.status(400).json({ ok: false, error: 'No webhook for this client. Add one in Admin → client Settings, or set WORKFLOW_DISCORD_WEBHOOK in Railway.' });
     res.status(x.ok ? 200 : 502).json({ ...x, source: r.client.webhook ? 'client' : 'default' });
+  });
+
+  /* ═════════ Update client (owner) ═════════
+     Definit / efface le petit message d'update. Il s'affiche UNE SEULE FOIS cote client
+     (seulement les clients qui ont un mot de passe) + notif telephone si abonne. */
+  app.post('/api/workflow/:key/update', async (req, res) => {
+    const r = resolve(req);
+    if (r.error) return res.status(r.error[0]).json({ error: r.error[1] });
+    if (r.role !== 'owner') return res.status(401).json({ error: 'Owner only' });
+    const hasPw = clientAuth.hasPassword(r.client.rawId);
+    const board = loadBoard(r.client);
+    const text = String((req.body || {}).text || '')
+      .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '')
+      .replace(/@(everyone|here)/gi, '@\u200b$1')
+      .trim().slice(0, 500);
+    if (!text) { delete board.update; }
+    else { board.update = { id: Date.now().toString(36), text, at: Date.now() }; }
+    board.rev = (board.rev || 0) + 1; board.updatedAt = Date.now();
+    try { saveBoard(r.client, board); } catch (e) { return res.status(500).json({ error: 'save_failed' }); }
+    if (board.update && hasPw) {
+      pushToClient(r.client, { title: 'Update from Sollenzia', body: text.slice(0, 120), url: `/workflow?c=${encodeURIComponent(r.client.key)}`, tag: 'update-' + board.update.id }).catch(() => {});
+    }
+    res.json({ ok: true, update: board.update || null, clientHasPassword: hasPw });
   });
 
   /* ═════════ Monteur : ses clients ═════════ */
